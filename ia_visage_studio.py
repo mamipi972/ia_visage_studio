@@ -111,7 +111,7 @@ if os.name == "nt":
 #    Toute valeur citee dans la documentation vient d'ici (voir
 #    TABLE_DES_VALEURS.md), et outils/verifier_livraison.py compare les deux.
 # ==============================================================================
-PLUGIN_VERSION = "1.0"
+PLUGIN_VERSION = "1.1"
 PROCEDURE_NAME = "plug-in-ia-visage-studio"
 
 # --- Piles techniques ---------------------------------------------------------
@@ -363,9 +363,12 @@ MODELES = {
     ROLE_AMELIORATION: {
         "fichier": "gfpgan_1_4.onnx",
         "taille_declaree": 340 * 1024 * 1024,
-        "sources": [
-            "https://huggingface.co/gmk123/GFPGAN/resolve/main/GFPGANv1.4.onnx",
-        ],
+        # Cette adresse renvoyait HTTP 404 chez l'utilisateur le 2026-09-17,
+        # comme les deux du detecteur avant elle. Retiree pour la meme raison.
+        # Les poids officiels .pth, eux, restent joignables sur les Releases
+        # GitHub de GFPGAN : la conversion en ONNX est une piste, pas une
+        # adresse.
+        "sources": [],
         "taille_entree": 512,
         "normalisation": [0.5, 0.5],
         "espace": "RGB",
@@ -1438,7 +1441,7 @@ def main():
         cfg = json.load(f)
     sortie = cfg.get("sortie")
     resultat = {"ok": False, "fournisseur": "", "detail": "",
-                "disponibles": [], "version": ""}
+                "disponibles": [], "demandes": [], "version": ""}
     try:
         import numpy as np
         import onnxruntime as ort
@@ -1446,8 +1449,23 @@ def main():
         options = ort.SessionOptions()
         options.enable_mem_pattern = False
         options.enable_cpu_mem_arena = False
+
+        # Croiser la demande avec les fournisseurs reellement disponibles,
+        # exactement comme le fait le worker. Sans ce croisement, un seul nom
+        # inconnu de cette build - ROCMExecutionProvider sur une machine
+        # Windows, par exemple - fait rejeter la liste ENTIERE par le moteur,
+        # qui se rabat alors sur le processeur. L'acceleration etait donc
+        # declaree impossible sur des postes ou elle fonctionnait, et le
+        # message accusait cuDNN.
+        disponibles = list(ort.get_available_providers())
+        resultat["disponibles"] = disponibles
+        demandes = [p for p in cfg["fournisseurs"] if p in disponibles]
+        if "CPUExecutionProvider" not in demandes:
+            demandes.append("CPUExecutionProvider")
+        resultat["demandes"] = demandes
+
         session = ort.InferenceSession(cfg["modele"], sess_options=options,
-                                       providers=cfg["fournisseurs"])
+                                       providers=demandes)
         alimentation = {}
         for entree in session.get_inputs():
             forme = []
@@ -1737,6 +1755,10 @@ def verdict_acceleration():
         return None
     if verdict.get("signature") != signature_paquets(STACK_GPU):
         return None
+    if verdict.get("version_greffon") != PLUGIN_VERSION:
+        # Une nouvelle version peut avoir corrige la validation elle-meme :
+        # c'est arrive. Un verdict rendu par l'ancienne ne vaut plus.
+        return None
     return verdict
 
 
@@ -1745,6 +1767,7 @@ def memoriser_verdict_acceleration(ok, constat):
     marqueur["acceleration"] = {
         "verdict": "ok" if ok else "echec",
         "signature": signature_paquets(STACK_GPU),
+        "version_greffon": PLUGIN_VERSION,
         "fournisseur": constat.get("fournisseur", ""),
         "detail": str(constat.get("detail", ""))[:300],
         "disponibles": constat.get("disponibles") or [],
@@ -1774,6 +1797,44 @@ def taille_dossier(chemin, plafond_fichiers=200000):
     return total
 
 
+# Indices lus dans le journal du moteur, du plus precis au plus general. Une
+# cause s'etablit sur une trace, elle ne s'affirme pas : la premiere version de
+# ce message accusait cuDNN de confiance, alors que le journal disait autre
+# chose - une liste de fournisseurs rejetee en bloc, et c'etait un defaut du
+# greffon.
+INDICES_CAUSE = (
+    (("unknown provider type", "ep error"),
+     "Le moteur a rejete la liste de fournisseurs demandee, et non un "
+     "fournisseur en particulier. C'est un defaut du greffon, pas de ce "
+     "poste : signalez ce message."),
+    (("cudnn",),
+     "cuDNN est en cause : absent, introuvable sur le PATH, ou d'une version "
+     "majeure differente de celle qu'attend cette version d'onnxruntime-gpu."),
+    (("failed to load library", "loadlibrary", "cannot open shared object"),
+     "Une bibliotheque du fournisseur GPU n'a pas pu etre chargee. La ligne "
+     "ci-dessus la nomme."),
+    (("cuda_error", "cuda failure", "no kernel image"),
+     "Le pilote ou le runtime CUDA a refuse l'initialisation."),
+)
+
+
+def cause_probable(constat):
+    """Une phrase de cause, appuyee sur ce que le moteur a reellement dit."""
+    texte = " ".join(constat.get("journal") or []).lower()
+    texte += " " + str(constat.get("detail", "")).lower()
+    for motifs, phrase in INDICES_CAUSE:
+        if any(motif in texte for motif in motifs):
+            return phrase
+    disponibles = constat.get("disponibles") or []
+    if "CUDAExecutionProvider" not in disponibles:
+        return ("Le fournisseur GPU n'est meme pas annonce par le moteur : la "
+                "roue installee est une roue processeur, ou sa bibliotheque "
+                "n'a pas pu etre chargee.")
+    return ("Le fournisseur GPU est annonce disponible mais n'a pas ete "
+            "retenu, et le moteur n'en dit pas la raison. Le journal archive "
+            "en contient davantage.")
+
+
 def message_acceleration_ecartee(constat, memorise=False):
     """Le symptome, l'etat des deux couches, la cause probable, et la suite.
 
@@ -1797,15 +1858,7 @@ def message_acceleration_ecartee(constat, memorise=False):
         lignes.append("  Moteur : " + ligne)
     if constat.get("detail"):
         lignes.append("  Detail : " + premiere_phrase(str(constat["detail"])))
-    if "CUDAExecutionProvider" in disponibles:
-        lignes.append("Cause la plus frequente dans ce cas : cuDNN absent, ou "
-                      "d'une version majeure differente de celle qu'attend "
-                      "cette version d'onnxruntime-gpu. Le fournisseur est "
-                      "annonce disponible, mais il ne se charge pas.")
-    else:
-        lignes.append("Le fournisseur GPU n'est meme pas annonce par le "
-                      "moteur : la roue installee est une roue processeur, ou "
-                      "sa bibliotheque n'a pas pu etre chargee.")
+    lignes.append(cause_probable(constat))
     lignes.append("Le traitement se poursuit sur le processeur : meme "
                   "resultat, seulement plus lent.")
     dossier = os.path.join(get_data_dir(), nom_venv(STACK_GPU))

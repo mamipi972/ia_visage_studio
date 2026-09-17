@@ -63,7 +63,7 @@ table de préséance exclut (voir plus bas).
 | --- | --- | --- | --- | --- |
 | **Anonymiser les visages** | Flou gaussien ou mosaïque sur chaque visage | aucun | — | fonctionne toujours |
 | **Faire sourire les visages** | Modifie l'expression sur chaque vignette | `attgan_smile.onnx` | **à fournir** | l'étape est ignorée, et le motif affiché |
-| **Améliorer les visages** | Restaure les détails de peau et d'yeux | `gfpgan_1_4.onnx` (~340 Mo) | déclarée, non vérifiée | rehaussement sans IA (masque flou + lissage) |
+| **Améliorer les visages** | Restaure les détails de peau et d'yeux | `gfpgan_1_4.onnx` (~340 Mo) | **à fournir** | rehaussement sans IA (masque flou + lissage) |
 | **Coloriser l'image** | Colorise toute l'image, luminance conservée | `deoldify_artistic.onnx` | **à fournir** | l'étape est ignorée, et le motif affiché |
 
 Toutes ces opérations ont d'abord besoin de **détecter les visages**, ce que le
@@ -85,11 +85,13 @@ mégaoctets. Le détecteur par défaut pèse 227 Ko.
 téléchargé depuis cette adresse, chargé par OpenCV et exécuté depuis ce dépôt.
 « Déclarée, non vérifiée » veut dire que l'adresse est écrite dans le code mais
 que personne ne l'a jointe : le libellé de la case le dit, et l'opération
-dégrade si elle ne répond pas. Deux adresses HuggingFace pour le détecteur
-YOLOv8 figuraient ici et renvoyaient **HTTP 401** chez un utilisateur — dépôt
-disparu ou devenu privé. Elles ont été retirées : une adresse dont on sait
-qu'elle ne répond pas ne vaut pas mieux que pas d'adresse, et elle coûte une
-requête à chaque lancement.
+dégrade si elle ne répond pas. Sur les quatre adresses que j'avais déclarées sans
+pouvoir les vérifier, **trois étaient mortes** : deux `HTTP 401` pour le
+détecteur YOLOv8, un `HTTP 404` pour GFPGAN. Toutes retirées — une adresse dont
+on sait qu'elle ne répond pas ne vaut pas mieux que pas d'adresse, et elle
+coûte une requête à chaque lancement. C'est la mesure de ce que vaut une
+adresse non vérifiée, et la raison pour laquelle le libellé de chaque case le
+dit maintenant.
 
 ### Réglages
 
@@ -365,12 +367,24 @@ traitement **se poursuit sur le processeur** et une phrase dit pourquoi. Un
 message d'erreur à la place d'un calque serait un échec de conception : vous
 vouliez traiter une image, pas arbitrer une question de pilotes.
 
+La liste de fournisseurs envoyée au moteur est **croisée avec ceux qu'il
+déclare disponibles**, côté worker comme côté validation. Un seul nom inconnu
+de la version installée — `ROCMExecutionProvider` sur une machine Windows —
+suffit sinon à faire rejeter la liste entière par `onnxruntime`, qui se rabat
+alors sur le processeur. Ce défaut a réellement fait déclarer l'accélération
+impossible sur un poste où elle fonctionnait. Les deux copies de cette règle
+sont désormais comparées par `outils/verifier_livraison.py`.
+
 **Un échec constaté n'est constaté qu'une fois.** Le verdict est écrit dans le
 marqueur d'environnement : les lancements suivants passent directement au
 processeur, sans retenter les roues cuDNN ni rejouer l'inférence de contrôle.
 Sans cette mémoire, chaque ouverture du filtre rejouait un travail dont l'issue
 était connue. Pour refaire l'essai — après avoir installé cuDNN, par exemple —
 cochez **Réinstaller l'environnement IA**.
+
+Le verdict se périme avec la version du greffon : une nouvelle version peut
+avoir corrigé la validation elle-même — c'est arrivé — et un constat rendu par
+l'ancienne ne vaut plus.
 
 Le message d'échec ne se contente pas du symptôme. « Le moteur est retombé sur
 `CPUExecutionProvider` » ne vous apprend rien d'actionnable ; le greffon joint
@@ -507,7 +521,7 @@ contrôle qu'on corrige, avant de livrer.
 ### Pourquoi une preuve par mutation
 
 Un test qui passe ne prouve rien tant qu'on n'a pas vérifié qu'il sait échouer.
-`tests_mutation.py` remet trente-cinq comportements fautifs dans une copie du
+`tests_mutation.py` remet trente-huit comportements fautifs dans une copie du
 code et vérifie que le contrôle correspondant passe au rouge — oubli du
 décalage de mise en lettre-boîte, pivot laissé en BGR, normalisation ignorée,
 16 bits traité comme du 8 bits, table de préséance désactivée, plafond mémoire

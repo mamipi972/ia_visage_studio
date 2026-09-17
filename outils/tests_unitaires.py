@@ -616,6 +616,68 @@ def test_verdict_acceleration_memorise():
         bac.fermer()
 
 
+def test_cause_probable():
+    """La cause s'etablit sur la trace du moteur, elle ne s'affirme pas.
+
+    La premiere version de ce message accusait cuDNN de confiance. Le journal
+    de l'utilisateur disait tout autre chose : une liste de fournisseurs
+    rejetee en bloc parce qu'elle contenait un nom inconnu de sa build - un
+    defaut du greffon, pas de son poste.
+    """
+    print("Materiel : la cause annoncee s'appuie sur la trace du moteur")
+    bac = Bac()
+    try:
+        module = bac.module
+        rejet = {"disponibles": ["CUDAExecutionProvider", "CPUExecutionProvider"],
+                 "journal": ["EP Error Unknown Provider Type: "
+                             "ROCMExecutionProvider when using [...]"]}
+        phrase = module.cause_probable(rejet)
+        controler("une liste rejetee en bloc est nommee comme telle",
+                  "liste de fournisseurs" in phrase, phrase)
+        controler("et elle n'accuse pas cuDNN", "cuDNN" not in phrase, phrase)
+
+        cudnn = {"disponibles": ["CUDAExecutionProvider", "CPUExecutionProvider"],
+                 "journal": ["Failed to load library "
+                             "onnxruntime_providers_cuda.dll: cudnn64_8.dll"]}
+        controler("un vrai probleme de cuDNN, lui, est nomme",
+                  "cuDNN" in module.cause_probable(cudnn),
+                  module.cause_probable(cudnn))
+
+        muet = {"disponibles": ["CUDAExecutionProvider", "CPUExecutionProvider"],
+                "journal": []}
+        controler("sans indice, le message ne suppose rien",
+                  "n'en dit pas la raison" in module.cause_probable(muet),
+                  module.cause_probable(muet))
+    finally:
+        bac.fermer()
+
+
+def test_verdict_perime_par_une_nouvelle_version():
+    """Un verdict rendu par une version anterieure ne vaut plus.
+
+    La validation elle-meme peut avoir ete corrigee - c'est arrive. Sans cette
+    peremption, un poste dont l'acceleration marche resterait sur le
+    processeur indefiniment, sur la foi d'un constat errone.
+    """
+    print("Materiel : un verdict d'acceleration se perime avec le greffon")
+    bac = Bac()
+    try:
+        module = bac.module
+        module.definir_pile(module.STACK_GPU)
+        module.memoriser_verdict_acceleration(
+            False, {"fournisseur": "CPUExecutionProvider", "disponibles": []})
+        controler("le verdict vaut pour la version courante",
+                  module.verdict_acceleration() is not None)
+        marqueur = module.lire_marqueur()
+        marqueur["acceleration"]["version_greffon"] = "0.9"
+        module.ecrire_marqueur(marqueur)
+        controler("un verdict d'une version anterieure est ignore",
+                  module.verdict_acceleration() is None,
+                  str(module.lire_marqueur().get("acceleration")))
+    finally:
+        bac.fermer()
+
+
 def test_diagnostic_du_moteur():
     print("Materiel : extraction du diagnostic ecrit par le moteur")
     bac = Bac()
@@ -1042,6 +1104,8 @@ def main():
     test_ecart_materiel_signale_une_fois()
     test_verdict_acceleration_memorise()
     test_diagnostic_du_moteur()
+    test_cause_probable()
+    test_verdict_perime_par_une_nouvelle_version()
     test_annulation_et_processus_orphelins()
     test_isolation_environnement()
     test_espace_disque()

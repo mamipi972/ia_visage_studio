@@ -26,10 +26,10 @@ Ce qui **a** été vérifié depuis ce dépôt, et comment :
 
 | Affirmation | Vérifiée par | Date | Version |
 | --- | --- | --- | --- |
-| Le greffon se charge et s'exerce hors de GIMP | `outils/tests_unitaires.py`, 109 contrôles | 2026-09-16 | 1.0 |
+| Le greffon se charge et s'exerce hors de GIMP | `outils/tests_unitaires.py`, 113 contrôles | 2026-09-16 | 1.0 |
 | Le worker produit les bons artefacts contre une doublure d'`onnxruntime` | `outils/tests_worker.py`, 54 contrôles | 2026-09-16 | 1.0 |
 | `run_procedure` aboutit de bout en bout et produit un calque nommé | `outils/tests_integration.py`, 30 contrôles | 2026-09-16 | 1.0 |
-| Chaque correctif fait échouer son test quand on le remet en défaut | `outils/tests_mutation.py`, 35 mutations | 2026-09-16 | 1.0 |
+| Chaque correctif fait échouer son test quand on le remet en défaut | `outils/tests_mutation.py`, 37 mutations | 2026-09-16 | 1.0 |
 | Le plafond mémoire refuse bien une allocation trop grande | `tests_worker.py`, cas 11, POSIX uniquement | 2026-09-16 | 1.0 |
 | Les cascades de Haar disparaissent à partir d'OpenCV 5 | constat sur `opencv-python-headless` 5.0.0 et 4.14.0 | 2026-09-16 | 1.0 |
 | Le modèle YuNet se télécharge depuis l'adresse déclarée, pèse 232 589 octets, se charge dans OpenCV 4.14 et détecte un visage | `outils/tests_yunet.py`, 14 contrôles sur le **vrai** modèle | 2026-09-17 | 1.0 |
@@ -42,7 +42,7 @@ Ce qui **a** été vérifié depuis ce dépôt, et comment :
 | Constante | Valeur | Nature | Rôle |
 | --- | --- | --- | --- |
 | `PLUGIN_ID` | ia_visage_studio | déclarée | Identifiant du greffon. Il nomme le journal, l'inventaire et le marqueur d'environnement. |
-| `PLUGIN_VERSION` | 1.0 | déclarée | Version du greffon, consignée dans le marqueur. Elle vit dans le code, jamais dans le nom du fichier. |
+| `PLUGIN_VERSION` | 1.1 | déclarée | Version du greffon, consignée dans le marqueur. Elle vit dans le code, jamais dans le nom du fichier. |
 | `PROCEDURE_NAME` | plug-in-ia-visage-studio | déclarée | Nom de la procédure enregistrée auprès de GIMP. |
 | `SHARED_DIR_NAME` | ai_suite_shared | déclarée | Dossier partagé par toute la suite. **Commun avec les autres greffons** : le modifier d'un seul côté sépare silencieusement deux greffons qui devaient partager leurs modèles. |
 | `VARIABLE_DOSSIER` | GIMP_AI_SUITE_DIR | déclarée | Variable d'environnement facultative qui impose l'emplacement des données volumineuses : autre disque, installation portable, dossier d'entreprise. Jamais nécessaire. |
@@ -106,7 +106,7 @@ adresse ne répond pas.
 | détection (défaut) | `face_detection_yunet_2023mar.onnx` | 232 589 octets — **mesurée** | variable, `YUNET_COTE_MAX` au plus | gérée par OpenCV | **vérifiée** le 2026-09-17 |
 | détection (alternative) | `yolov8n-face.onnx` | 13 Mo | 640 x 640 | `x / 255` | aucune — à fournir |
 | sourire | `attgan_smile.onnx` | 150 Mo | 256 x 256 | `x / 127,5 - 1` | aucune — à fournir |
-| amélioration | `gfpgan_1_4.onnx` | 340 Mo | 512 x 512 | `x / 127,5 - 1` | déclarée, **non vérifiée** |
+| amélioration | `gfpgan_1_4.onnx` | 340 Mo | 512 x 512 | `x / 127,5 - 1` | aucune — à fournir |
 | colorisation | `deoldify_artistic.onnx` | 250 Mo | 256 x 256 | `x / 127,5 - 1` | aucune — à fournir |
 
 Les rôles sans adresse déclarée ne sont **jamais** téléchargés automatiquement :
@@ -118,7 +118,9 @@ sait pas faire.
 
 Les deux adresses HuggingFace du détecteur YOLOv8 ont été **retirées** le
 2026-09-17 : elles renvoyaient `HTTP 401` chez un utilisateur, le dépôt ayant
-disparu ou étant devenu privé. Une adresse dont on sait qu'elle ne répond pas
+disparu ou étant devenu privé. Celle de GFPGAN l'a été le même jour, pour un
+`HTTP 404`. Sur quatre adresses déclarées sans vérification, **trois étaient
+mortes** — ce qui donne la mesure de ce que vaut une adresse non vérifiée. Une adresse dont on sait qu'elle ne répond pas
 ne vaut pas mieux que pas d'adresse, et elle coûte une requête à chaque
 lancement.
 

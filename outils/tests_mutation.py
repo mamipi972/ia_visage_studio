@@ -26,6 +26,7 @@ Trois pieges que ce banc traite explicitement :
 
 import io
 import os
+import subprocess
 import shutil
 import sys
 import tempfile
@@ -296,6 +297,42 @@ MUTATIONS_GREFFON = [
             "")],
         "tests": ["test_verdict_acceleration_memorise"],
         "rouges": ["le message joint l'etat des deux couches"],
+    },
+    {
+        "nom": "le script de validation ne croise plus les fournisseurs",
+        "pourquoi": "un seul nom inconnu de la build - ROCMExecutionProvider "
+                    "sous Windows - fait rejeter la liste ENTIERE par "
+                    "onnxruntime, qui se rabat sur le processeur. "
+                    "L'acceleration etait declaree impossible sur un poste ou "
+                    "elle fonctionnait, et le message accusait cuDNN",
+        "remplacements": [(
+            '        demandes = [p for p in cfg["fournisseurs"] if p in disponibles]\n',
+            '        demandes = list(cfg["fournisseurs"])\n')],
+        "tests": [],
+        "controle_livraison": True,
+    },
+    {
+        "nom": "la cause annoncee redevient une affirmation",
+        "pourquoi": "accuser cuDNN de confiance envoie l'utilisateur reparer "
+                    "ce qui n'est pas casse, et masque un defaut du greffon",
+        "remplacements": [(
+            "    for motifs, phrase in INDICES_CAUSE:\n"
+            "        if any(motif in texte for motif in motifs):\n"
+            "            return phrase\n", "")],
+        "tests": ["test_cause_probable"],
+        "rouges": ["une liste rejetee en bloc est nommee comme telle",
+                   "un vrai probleme de cuDNN, lui, est nomme"],
+    },
+    {
+        "nom": "le verdict d'acceleration ne se perime plus avec la version",
+        "pourquoi": "un poste dont l'acceleration marche resterait sur le "
+                    "processeur indefiniment, sur la foi d'un constat rendu "
+                    "par une version dont la validation etait fausse",
+        "remplacements": [(
+            '    if verdict.get("version_greffon") != PLUGIN_VERSION:\n',
+            "    if False:\n")],
+        "tests": ["test_verdict_perime_par_une_nouvelle_version"],
+        "rouges": ["un verdict d'une version anterieure est ignore"],
     },
     {
         "nom": "les donnees volumineuses retournent sous le profil GIMP",
@@ -637,6 +674,23 @@ def mutations_du_worker():
                   " | ".join(problemes))
 
 
+def controle_livraison_rouge(chemin_greffon):
+    """Le controle de livraison, execute sur une copie mutee du greffon.
+
+    Certaines regressions ne se voient pas a l'execution : celle qui nous
+    occupe ne se manifestait que sur un poste equipe d'une carte graphique.
+    C'est alors le controle de livraison qui doit l'arreter, et c'est lui
+    qu'il faut prouver capable d'echouer.
+    """
+    verif = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                         "verifier_livraison.py")
+    code = "import sys; sys.argv=[%r]; " % verif
+    proc = subprocess.run(
+        [sys.executable, verif], capture_output=True, text=True,
+        env=dict(os.environ, IA_VISAGE_GREFFON=chemin_greffon))
+    return proc.returncode != 0, proc.stdout
+
+
 def mutations_du_greffon():
     print("Mutations du greffon")
     original = open(CHEMIN_GREFFON, encoding="utf-8").read()
@@ -645,6 +699,18 @@ def mutations_du_greffon():
             mute = appliquer(original, mutation["remplacements"], mutation["nom"])
         except AssertionError as e:
             controler("mutation applicable : " + mutation["nom"], False, str(e))
+            continue
+        if mutation.get("controle_livraison"):
+            dossier = tempfile.mkdtemp(prefix="mutation_livraison_")
+            chemin = os.path.join(dossier, "ia_visage_studio.py")
+            with open(chemin, "w", encoding="utf-8", newline="\n") as f:
+                f.write(mute)
+            try:
+                rouge, sortie = controle_livraison_rouge(chemin)
+            finally:
+                shutil.rmtree(dossier, ignore_errors=True)
+            controler("mutation detectee : " + mutation["nom"], rouge,
+                      "le controle de livraison reste vert")
             continue
         dossier = tempfile.mkdtemp(prefix="mutation_greffon_")
         chemin = os.path.join(dossier, "ia_visage_studio.py")
