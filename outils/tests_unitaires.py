@@ -16,6 +16,7 @@ processus enfant ne survit pas a son parent.
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -447,6 +448,73 @@ def test_degradation_des_modeles():
         bac.fermer()
 
 
+def test_libelle_des_modeles():
+    """Ce que la case promet doit etre ce que le code sait faire.
+
+    Trois situations distinctes se ressemblent a l'usage et n'ont pas du tout
+    la meme reponse : une adresse verifiee, une absence sans recours, et une
+    absence que l'utilisateur peut lever lui-meme. Les confondre, c'est soit
+    promettre un telechargement qui n'aura pas lieu, soit decrire comme morte
+    une case qui ne l'est pas.
+    """
+    print("Modeles : le libelle de la case dit ce que le code sait faire")
+    bac = Bac()
+    try:
+        module = bac.module
+        verifie = module.annonce_cout(module.ROLE_DETECTION_YUNET)
+        controler("une source verifiee annonce un telechargement",
+                  "telecharges au premier usage" in verifie, verifie)
+
+        sans_recours = module.annonce_cout(module.ROLE_SOURIRE)
+        controler("une absence sans recours demande le depot du fichier",
+                  "a fournir" in sans_recours
+                  and module.MODELES[module.ROLE_SOURIRE]["fichier"] in sans_recours,
+                  sans_recours)
+        controler("et elle ne promet aucun telechargement",
+                  "telecharg" not in sans_recours.replace(
+                      "pas d'adresse pour le telecharger", ""),
+                  sans_recours)
+
+        entree = module.MODELES[module.ROLE_AMELIORATION]
+        # Lu une fois, avec un defaut : sans cela, l'absence de la cle leverait
+        # une exception a la ligne suivante et interromprait le test. Un
+        # controle qui plante au lieu de virer au rouge ne dit plus lequel des
+        # mecanismes a cede.
+        script = entree.get("convertisseur") or "<aucun convertisseur declare>"
+        controler("le modele d'amelioration declare un convertisseur",
+                  bool(entree.get("convertisseur")), script)
+        nom_script = os.path.basename(script)
+        fabricable = module.annonce_cout(module.ROLE_AMELIORATION)
+        controler("une absence reparable annonce la fabrication",
+                  "a fabriquer" in fabricable, fabricable)
+        controler("et nomme le script, sans le laisser chercher",
+                  nom_script in fabricable, fabricable)
+
+        message = module.message_depot_manuel([module.ROLE_AMELIORATION])
+        controler("le message de dernier recours nomme lui aussi le script",
+                  nom_script in message, message[:300])
+
+        # Le greffon s'installe seul, sans le reste du depot : quand le script
+        # est joignable, le chemin annonce doit etre celui qu'on peut ouvrir,
+        # et non un chemin relatif a un dossier que l'utilisateur n'a pas.
+        resolu = module.convertisseur_du_modele(module.ROLE_AMELIORATION)
+        controler("le chemin annonce existe quand le script est joignable",
+                  os.path.isabs(resolu) and os.path.isfile(resolu),
+                  str(resolu))
+        controler("et le libelle reprend ce chemin resolu",
+                  resolu in fabricable, fabricable)
+
+        # Le libelle se derive de la table : retirer le convertisseur doit
+        # ramener le message au depot manuel, et non laisser une promesse.
+        entree.pop("convertisseur", None)
+        retombee = module.annonce_cout(module.ROLE_AMELIORATION)
+        controler("sans convertisseur declare, le libelle redevient un depot",
+                  "a fournir" in retombee and "a fabriquer" not in retombee,
+                  retombee)
+    finally:
+        bac.fermer()
+
+
 def test_sources_utilisateur():
     print("Modeles : sources_modeles.json complete la table du code")
     bac = Bac()
@@ -546,6 +614,154 @@ def test_ecart_materiel_signale_une_fois():
         controler("le materiel constate est note dans le marqueur",
                   module.lire_marqueur().get("dernier_materiel_constate")
                   == "GPU NVIDIA", str(module.lire_marqueur()))
+    finally:
+        bac.fermer()
+
+
+def test_verdict_acceleration_memorise():
+    """Un echec d'acceleration deja constate ne se reconstate pas.
+
+    C'est la section 17 du scenario : memoriser l'echec dans le marqueur pour
+    ne pas relancer, a chaque ouverture du filtre, un travail dont on connait
+    l'issue. Sans cela, les roues cuDNN etaient retentees et l'inference de
+    controle rejouee a chaque lancement, pour aboutir au meme repli.
+    """
+    print("Materiel : un echec d'acceleration constate une fois ne se rejoue pas")
+    bac = Bac()
+    try:
+        module = bac.module
+        module.definir_pile(module.STACK_GPU)
+        controler("aucun verdict au depart",
+                  module.verdict_acceleration() is None)
+
+        constat = {"ok": True, "fournisseur": "CPUExecutionProvider",
+                   "detail": "", "disponibles": ["CPUExecutionProvider"],
+                   "version": "1.17.0",
+                   "journal": ["Failed to load library libonnxruntime_providers_cuda.so"]}
+        module.memoriser_verdict_acceleration(False, constat)
+        verdict = module.verdict_acceleration()
+        controler("le verdict est memorise avec son constat",
+                  verdict and verdict.get("verdict") == "echec"
+                  and verdict.get("disponibles") == ["CPUExecutionProvider"],
+                  str(verdict))
+
+        # Un second lancement ne doit ni installer cuDNN ni rejouer l'inference.
+        appels = []
+        module.installer_cudnn = lambda *a, **k: appels.append("cudnn") or (False, "")
+        module.valider_acceleration = lambda *a, **k: appels.append("validation") or {}
+        module.preparer_environnement = lambda *a, **k: appels.append("env") or sys.executable
+        greffon = module.IaVisageStudioPlugin()
+        avertissements = []
+        module.definir_pile(module.STACK_GPU)
+        # Un modele doit etre fourni, sinon le code s'arrete avant l'inference
+        # de controle pour une tout autre raison, et le controle ci-dessous ne
+        # prouverait rien.
+        modeles = {module.ROLE_DETECTION_YUNET:
+                   os.path.join(bac.dossier, "factice.onnx")}
+        utiliser, python, env, fournisseurs = greffon._valider_ou_degrader(
+            sys.executable, modeles, bac.dossier, lambda t: None,
+            avertissements, False)
+        controler("aucune roue cuDNN n'est retentee", "cudnn" not in appels,
+                  str(appels))
+        controler("l'inference de controle n'est pas rejouee",
+                  "validation" not in appels, str(appels))
+        controler("le traitement bascule sur le processeur",
+                  utiliser is False and fournisseurs == module.FOURNISSEURS_CPU,
+                  str((utiliser, fournisseurs)))
+        message = "\n".join(avertissements)
+        controler("le message dit que le constat est memorise",
+                  "memorise" in message or "constat deja etabli" in message,
+                  message[:200])
+        controler("le message joint l'etat des deux couches",
+                  "Fournisseurs declares par le moteur" in message
+                  and "Runtime du systeme" in message, message[:300])
+        controler("le message cite ce que le moteur a dit lui-meme",
+                  "libonnxruntime_providers_cuda" in message, message[:400])
+        controler("le message dit comment refaire l'essai",
+                  "Reinstaller l'environnement IA" in message, message[:600])
+    finally:
+        bac.fermer()
+
+
+def test_cause_probable():
+    """La cause s'etablit sur la trace du moteur, elle ne s'affirme pas.
+
+    La premiere version de ce message accusait cuDNN de confiance. Le journal
+    de l'utilisateur disait tout autre chose : une liste de fournisseurs
+    rejetee en bloc parce qu'elle contenait un nom inconnu de sa build - un
+    defaut du greffon, pas de son poste.
+    """
+    print("Materiel : la cause annoncee s'appuie sur la trace du moteur")
+    bac = Bac()
+    try:
+        module = bac.module
+        rejet = {"disponibles": ["CUDAExecutionProvider", "CPUExecutionProvider"],
+                 "journal": ["EP Error Unknown Provider Type: "
+                             "ROCMExecutionProvider when using [...]"]}
+        phrase = module.cause_probable(rejet)
+        controler("une liste rejetee en bloc est nommee comme telle",
+                  "liste de fournisseurs" in phrase, phrase)
+        controler("et elle n'accuse pas cuDNN", "cuDNN" not in phrase, phrase)
+
+        cudnn = {"disponibles": ["CUDAExecutionProvider", "CPUExecutionProvider"],
+                 "journal": ["Failed to load library "
+                             "onnxruntime_providers_cuda.dll: cudnn64_8.dll"]}
+        controler("un vrai probleme de cuDNN, lui, est nomme",
+                  "cuDNN" in module.cause_probable(cudnn),
+                  module.cause_probable(cudnn))
+
+        muet = {"disponibles": ["CUDAExecutionProvider", "CPUExecutionProvider"],
+                "journal": []}
+        controler("sans indice, le message ne suppose rien",
+                  "n'en dit pas la raison" in module.cause_probable(muet),
+                  module.cause_probable(muet))
+    finally:
+        bac.fermer()
+
+
+def test_verdict_perime_par_une_nouvelle_version():
+    """Un verdict rendu par une version anterieure ne vaut plus.
+
+    La validation elle-meme peut avoir ete corrigee - c'est arrive. Sans cette
+    peremption, un poste dont l'acceleration marche resterait sur le
+    processeur indefiniment, sur la foi d'un constat errone.
+    """
+    print("Materiel : un verdict d'acceleration se perime avec le greffon")
+    bac = Bac()
+    try:
+        module = bac.module
+        module.definir_pile(module.STACK_GPU)
+        module.memoriser_verdict_acceleration(
+            False, {"fournisseur": "CPUExecutionProvider", "disponibles": []})
+        controler("le verdict vaut pour la version courante",
+                  module.verdict_acceleration() is not None)
+        marqueur = module.lire_marqueur()
+        marqueur["acceleration"]["version_greffon"] = "0.9"
+        module.ecrire_marqueur(marqueur)
+        controler("un verdict d'une version anterieure est ignore",
+                  module.verdict_acceleration() is None,
+                  str(module.lire_marqueur().get("acceleration")))
+    finally:
+        bac.fermer()
+
+
+def test_diagnostic_du_moteur():
+    print("Materiel : extraction du diagnostic ecrit par le moteur")
+    bac = Bac()
+    try:
+        module = bac.module
+        brut = ("2026-09-17 10:00:00 [I] Creating session\n"
+                "[E:onnxruntime] Failed to load library "
+                "libonnxruntime_providers_cuda.so: libcudnn.so.8: cannot open "
+                "shared object file\n"
+                "une ligne sans rapport\n"
+                "[W] Falling back to CPUExecutionProvider\n")
+        lignes = module.lignes_diagnostic_moteur(brut)
+        controler("les lignes qui nomment la cause sont retenues",
+                  any("libcudnn" in l for l in lignes), str(lignes))
+        controler("les lignes sans rapport sont ecartees",
+                  not any("sans rapport" in l for l in lignes), str(lignes))
+        controler("la queue est bornee", len(lignes) <= 4, str(len(lignes)))
     finally:
         bac.fermer()
 
@@ -684,16 +900,69 @@ def test_journaux_et_messages():
                   incident.get("greffon") == module.PLUGIN_ID, str(incident))
         shutil.rmtree(travail, ignore_errors=True)
 
+        # Un greffon voisin de la suite depose ses archives dans le meme
+        # dossier, avec une autre convention de nommage. En ASCII le tiret
+        # precede le chiffre : un tri alphabetique placerait toujours cette
+        # forme en tete, et une purge qui s'y fierait la supprimerait en
+        # premier, quel que soit son age.
+        voisines = []
+        for heure in ("19-44-05", "19-44-06", "19-44-07"):
+            d = os.path.join(module.get_logs_dir(), "2026-09-16_" + heure)
+            os.makedirs(d, exist_ok=True)
+            with open(os.path.join(d, "incident.json"), "w",
+                      encoding="utf-8") as f:
+                json.dump({"greffon": "ia_detourage", "version": "3.11.0"}, f)
+            voisines.append(d)
+        sans_marque = os.path.join(module.get_logs_dir(), "2026-01-01_00-00-00")
+        os.makedirs(sans_marque, exist_ok=True)
+
         for _ in range(module.ARCHIVES_A_CONSERVER + 4):
             t = tempfile.mkdtemp(prefix="travail_")
             with open(os.path.join(t, "worker.log"), "w") as f:
                 f.write("x")
             module.archiver_journaux(t)
             shutil.rmtree(t, ignore_errors=True)
-        restants = [d for d in os.listdir(module.get_logs_dir())
-                    if os.path.isdir(os.path.join(module.get_logs_dir(), d))]
-        controler("la purge conserve les dix incidents les plus recents",
-                  len(restants) == module.ARCHIVES_A_CONSERVER, str(len(restants)))
+        miennes = module.archives_du_greffon(module.get_logs_dir())
+        controler("la purge conserve les dix incidents de ce greffon",
+                  len(miennes) == module.ARCHIVES_A_CONSERVER, str(len(miennes)))
+        controler("les archives d'un greffon voisin sont intactes",
+                  all(os.path.isdir(d) for d in voisines),
+                  str([d for d in voisines if not os.path.isdir(d)]))
+        controler("une archive recente non identifiee est conservee",
+                  os.path.isdir(sans_marque), sans_marque)
+
+        # Le stock orphelin - archives d'avant le marqueur, ou d'un greffon de
+        # la suite qui ne le pose pas encore - se resorbe, mais seulement au
+        # dela de deux conditions reunies : l'age et le nombre.
+        jour = 86400
+        anciennes = []
+        for index in range(module.ARCHIVES_A_CONSERVER + 3):
+            d = os.path.join(module.get_logs_dir(), "2025-01-%02d_00-00-00"
+                             % (index + 1))
+            os.makedirs(d, exist_ok=True)
+            with open(os.path.join(d, "worker.log"), "w") as f:
+                f.write("x")
+            quand = time.time() - 40 * jour
+            os.utime(os.path.join(d, "worker.log"), (quand, quand))
+            os.utime(d, (quand, quand))
+            anciennes.append(d)
+        module.purger_journaux(module.get_logs_dir())
+        # sans_marque compte lui aussi parmi les orphelines, et il est le plus
+        # recent : le decompte porte donc sur l'ensemble, pas sur les seules
+        # anciennes.
+        orphelines = [d for d in os.listdir(module.get_logs_dir())
+                      if os.path.isdir(os.path.join(module.get_logs_dir(), d))
+                      and not os.path.isfile(os.path.join(
+                          module.get_logs_dir(), d, "incident.json"))]
+        supprimees = [d for d in anciennes if not os.path.isdir(d)]
+        controler("les archives orphelines anciennes se resorbent",
+                  len(orphelines) == module.ARCHIVES_A_CONSERVER
+                  and len(supprimees) == 4,
+                  "%d orphelines restantes, %d anciennes supprimees"
+                  % (len(orphelines), len(supprimees)))
+        controler("celle d'un voisin, recente, n'a toujours pas bouge",
+                  all(os.path.isdir(d) for d in voisines)
+                  and os.path.isdir(sans_marque), str(voisines))
 
         texte = ("RAISON: le modele est absent.\n"
                  "Detail : 400 lignes de sortie pip\nencore une ligne")
@@ -711,6 +980,111 @@ def test_journaux_et_messages():
         controler("un journal en UTF-16 reste lisible",
                   "erreur" in module.lire_journal(chemin),
                   repr(module.lire_journal(chemin)[:40]))
+    finally:
+        bac.fermer()
+
+
+def _venv_factice(module, paquets):
+    """Cree un venv minimal et y depose des modules bouchons.
+
+    Sans pip : le but est justement de verifier qu'il n'est jamais appele. Les
+    bouchons rendent le test independant de ce qui est installe sur la machine,
+    et c'est le chemin de decision qui est teste, pas les vraies roues.
+    """
+    venv = os.path.join(module.get_data_dir(), module.nom_venv(module.STACK_CPU))
+    code = subprocess.call([sys.executable, "-m", "venv", "--without-pip", venv],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if code != 0:
+        return None, None, None
+    py = module.chemin_python_venv(venv)
+    site = subprocess.run(
+        [py, "-c", "import site; print(site.getsitepackages()[0])"],
+        capture_output=True, text=True).stdout.strip()
+    if not site or not os.path.isdir(site):
+        return None, None, None
+    for nom in paquets:
+        with open(os.path.join(site, nom + ".py"), "w", encoding="utf-8") as f:
+            f.write("__version__ = '0.0-bouchon'\n")
+    return venv, py, site
+
+
+def test_poste_deja_installe():
+    """L'etat que les tests oublient le plus souvent : celui d'un poste deja
+    installe.
+
+    Le venv de la pile est la, pose par un autre greffon de la suite, et ce
+    greffon-ci n'a pas encore de marqueur. Il doit constater et demarrer, pas
+    reinstaller plusieurs centaines de megaoctets. Le second cas verifie que ce
+    test sait dire le contraire : un venv incomplet doit, lui, declencher une
+    reparation.
+    """
+    print("Environnement : poste ou un autre greffon a deja installe la pile")
+    bac = Bac()
+    try:
+        module = bac.module
+        venv, py, site = _venv_factice(module, ("numpy", "cv2", "onnxruntime"))
+        if not py:
+            controler("un venv de test a pu etre cree", False,
+                      "creation impossible sur ce poste")
+            return
+        controler("aucun marqueur pour ce greffon au depart",
+                  not os.path.isfile(module.get_marker_path()))
+
+        lances = []
+        original = module.demarrer_processus
+
+        def espion(cmd, env, fichier_log=None):
+            lances.append(list(cmd))
+            return original(cmd, env, fichier_log)
+
+        module.demarrer_processus = espion
+        # La decouverte d'interpreteur a ses propres tests ; on la neutralise
+        # ici pour que ce test ne porte que sur la decision de reinstaller.
+        module.decouvrir_pythons = lambda: [
+            {"chemin": sys.executable, "canal": "test", "version": (3, 11, 0),
+             "score_canal": 90, "dans_plafond": 1}]
+
+        travail = tempfile.mkdtemp(prefix="travail_")
+        # L'appel est protege : un greffon qui reinstallerait ici echouerait
+        # faute de pip, et une exception qui remonte ferait sauter les
+        # controles suivants - le test dirait alors moins que ce qu'il sait.
+        retour, incident = None, ""
+        try:
+            retour = module.preparer_environnement(module.STACK_CPU, travail,
+                                                   False, lambda texte: None)
+        except Exception as e:
+            incident = str(e)[:200]
+        pip = [c for c in lances if "pip" in " ".join(c)]
+        creations = [c for c in lances if "venv" in c]
+        controler("l'interpreteur du venv existant est retenu",
+                  retour is not None
+                  and os.path.normpath(retour) == os.path.normpath(py),
+                  retour or incident)
+        controler("aucune commande pip n'est lancee", not pip, str(pip))
+        controler("aucun venv n'est recree", not creations, str(creations))
+        marqueur = module.lire_marqueur()
+        controler("le greffon ecrit son propre marqueur, sans toucher a celui "
+                  "du voisin",
+                  marqueur.get("statut") == "pret"
+                  and module.PLUGIN_ID in os.path.basename(module.get_marker_path()),
+                  str(marqueur.get("statut")))
+
+        # Second cas : le venv existe mais lui manque une dependance. Le
+        # greffon doit alors reparer, faute de quoi le controle ci-dessus ne
+        # prouverait rien - il serait vert meme si plus rien n'etait jamais
+        # installe.
+        os.remove(os.path.join(site, "onnxruntime.py"))
+        module.invalider_marqueur("test : dependance retiree")
+        lances[:] = []
+        try:
+            module.preparer_environnement(module.STACK_CPU, travail, False,
+                                          lambda texte: None)
+        except Exception:
+            pass
+        pip = [c for c in lances if "pip" in " ".join(c)]
+        controler("un venv incomplet declenche bien une reparation", bool(pip),
+                  str(lances))
+        shutil.rmtree(travail, ignore_errors=True)
     finally:
         bac.fermer()
 
@@ -791,13 +1165,19 @@ def main():
     test_vraisemblance_et_fichier_inutilisable()
     test_telechargement_annonce_et_seuil()
     test_degradation_des_modeles()
+    test_libelle_des_modeles()
     test_sources_utilisateur()
     test_tofu()
     test_refus_gpu_avant_telechargement()
     test_ecart_materiel_signale_une_fois()
+    test_verdict_acceleration_memorise()
+    test_diagnostic_du_moteur()
+    test_cause_probable()
+    test_verdict_perime_par_une_nouvelle_version()
     test_annulation_et_processus_orphelins()
     test_isolation_environnement()
     test_espace_disque()
+    test_poste_deja_installe()
     test_journaux_et_messages()
     test_api_gimp()
     test_etiquette_du_calque()

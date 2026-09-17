@@ -111,7 +111,7 @@ if os.name == "nt":
 #    Toute valeur citee dans la documentation vient d'ici (voir
 #    TABLE_DES_VALEURS.md), et outils/verifier_livraison.py compare les deux.
 # ==============================================================================
-PLUGIN_VERSION = "1.0"
+PLUGIN_VERSION = "1.1"
 PROCEDURE_NAME = "plug-in-ia-visage-studio"
 
 # --- Piles techniques ---------------------------------------------------------
@@ -205,6 +205,13 @@ PAUSE_ENTRE_MODELES_S = 0.5
 
 # --- Detection des visages ----------------------------------------------------
 TAILLE_ENTREE_DETECTION = 640
+# YuNet accepte n'importe quelle taille d'entree, mais son cout croit avec
+# elle : une photo de douze megapixels y passerait entiere. L'image est donc
+# reduite pour que son plus grand cote n'excede pas cette valeur, et les boites
+# rendues sont remises a l'echelle de l'image d'origine. C'est une conversion
+# de coordonnees de plus, donc une erreur possible de plus : elle est couverte
+# par un test geometrique sur le vrai modele.
+YUNET_COTE_MAX = 1024
 SCORE_MIN_VISAGE = 0.35
 NMS_RECOUVREMENT_MAX = 0.45
 VISAGES_MAX = 32
@@ -296,19 +303,57 @@ MARQUEURS_WORKER = (
 # ==============================================================================
 FICHIER_SOURCES_UTILISATEUR = "sources_modeles.json"
 
+# Certains modeles n'ont aucune adresse qui reponde, mais leurs poids
+# d'origine, eux, sont publies : ils se fabriquent. Le chemin est relatif au
+# depot du greffon, et le nommer ici plutot que dans deux messages evite
+# qu'un renommage n'en corrige qu'un seul.
+CONVERTISSEUR_GFPGAN = "outils/conversion/convertir_gfpgan.py"
+
 ROLE_DETECTION = "detection"
+ROLE_DETECTION_YUNET = "detection_yunet"
 ROLE_SOURIRE = "sourire"
 ROLE_AMELIORATION = "amelioration"
 ROLE_COLORISATION = "colorisation"
 
 MODELES = {
+    # Detecteur par defaut : YuNet, du zoo de modeles d'OpenCV. 227 Ko, licence
+    # Apache-2.0, et surtout OpenCV sait le piloter lui-meme par
+    # cv2.FaceDetectorYN - il n'y a donc ni mise en lettre-boite ni decodage de
+    # sortie a ecrire, c'est-a-dire ni l'un ni l'autre a se tromper.
+    #
+    # L'adresse et la taille de ce modele sont MESUREES : le fichier a ete
+    # telecharge et charge par OpenCV 4.14 depuis ce depot le 2026-09-17.
+    # C'est le seul modele de cette table dont ce soit le cas, et c'est
+    # pourquoi c'est le seul que le greffon va chercher de lui-meme.
+    #
+    # Attention a l'adresse : raw.githubusercontent.com ne rend que le
+    # pointeur Git LFS de 131 octets, que le controle de vraisemblance rejette
+    # a juste titre. C'est media.githubusercontent.com qui sert le contenu.
+    ROLE_DETECTION_YUNET: {
+        "fichier": "face_detection_yunet_2023mar.onnx",
+        "taille_declaree": 232589,
+        "taille_min": 100 * 1024,
+        "source_verifiee": True,
+        "sources": [
+            "https://media.githubusercontent.com/media/opencv/opencv_zoo/main/"
+            "models/face_detection_yunet/face_detection_yunet_2023mar.onnx",
+        ],
+        "taille_entree": YUNET_COTE_MAX,
+        "normalisation": [0.0, 1.0],
+        "espace": "BGR",
+    },
+    # Detecteur alternatif. Aucune adresse n'est declaree : les deux qui
+    # figuraient ici renvoyaient HTTP 401 chez l'utilisateur, le depot ayant
+    # disparu ou etant devenu prive. Une adresse dont on sait qu'elle ne
+    # repond pas ne vaut pas mieux que pas d'adresse du tout, et elle coute
+    # une requete a chaque lancement. Ce modele s'obtient donc par depot
+    # manuel, ou par une adresse declaree dans sources_modeles.json - et il
+    # passe alors devant YuNet, parce qu'un fichier depose l'a ete
+    # deliberement.
     ROLE_DETECTION: {
         "fichier": "yolov8n-face.onnx",
         "taille_declaree": 13 * 1024 * 1024,
-        "sources": [
-            "https://huggingface.co/AdamCodd/YOLOv8n-face-detection/resolve/main/model.onnx",
-            "https://huggingface.co/Xenova/yolov8n-face/resolve/main/onnx/model.onnx",
-        ],
+        "sources": [],
         "taille_entree": TAILLE_ENTREE_DETECTION,
         "normalisation": [0.0, 1.0],
         "espace": "RGB",
@@ -323,10 +368,19 @@ MODELES = {
     },
     ROLE_AMELIORATION: {
         "fichier": "gfpgan_1_4.onnx",
-        "taille_declaree": 340 * 1024 * 1024,
-        "sources": [
-            "https://huggingface.co/gmk123/GFPGAN/resolve/main/GFPGANv1.4.onnx",
-        ],
+        # Mesure, et non estime : deux exports faits ici pesaient 340 360 308
+        # et 340 363 267 octets. La valeur ne sert qu'a l'affichage, aucune
+        # adresse n'etant declaree - raison de plus pour qu'elle soit juste.
+        "taille_declaree": 325 * 1024 * 1024,
+        # Cette adresse renvoyait HTTP 404 chez l'utilisateur le 2026-09-17,
+        # comme les deux du detecteur avant elle. Retiree pour la meme raison.
+        # Les poids officiels .pth, eux, restent joignables sur les Releases
+        # GitHub de GFPGAN : la conversion en ONNX est une piste, pas une
+        # adresse.
+        "sources": [],
+        # Faute d'adresse, ce modele se fabrique : le convertisseur part des
+        # poids PyTorch officiels, qui eux repondent.
+        "convertisseur": CONVERTISSEUR_GFPGAN,
         "taille_entree": 512,
         "normalisation": [0.5, 0.5],
         "espace": "RGB",
@@ -344,7 +398,8 @@ MODELES = {
 # Roles dont l'absence se rattrape par un chemin sans IA, et roles dont
 # l'absence annule simplement l'operation. La distinction gouverne le message
 # affiche : un repli s'annonce, une operation annulee s'explique.
-ROLES_AVEC_REPLI = (ROLE_DETECTION, ROLE_AMELIORATION)
+ROLES_AVEC_REPLI = (ROLE_DETECTION, ROLE_DETECTION_YUNET,
+                    ROLE_AMELIORATION)
 
 # Vecteur d'attributs du modele de sourire. Sa taille et l'indice de
 # l'attribut "sourire" dependent de l'export : ils sont transmis au worker,
@@ -363,6 +418,64 @@ FOURNISSEURS_GPU = [
     "CPUExecutionProvider",
 ]
 FOURNISSEURS_CPU = ["CPUExecutionProvider"]
+
+
+def convertisseur_du_modele(role):
+    """Chemin du script qui fabrique ce modele, absolu quand il est joignable.
+
+    Le greffon s'installe seul : un seul fichier depose dans plug-ins/, sans
+    le reste du depot. Annoncer "outils/conversion/..." a quelqu'un qui n'a
+    que le greffon reviendrait a le renvoyer chercher - exactement le reproche
+    fait aux messages qui constatent sans indiquer. Quand le script est la, on
+    donne son chemin exact ; sinon, on dit d'ou il vient.
+    """
+    relatif = MODELES.get(role, {}).get("convertisseur")
+    if not relatif:
+        return None
+    morceaux = relatif.split("/")
+    try:
+        base = os.path.dirname(os.path.realpath(__file__))
+    except Exception:
+        return relatif
+    # A cote du greffon, puis un cran au-dessus : le fichier livre vit dans le
+    # depot, mais il se copie aussi bien a cote du greffon installe.
+    for racine in (base, os.path.dirname(base)):
+        candidat = os.path.join(racine, *morceaux)
+        if os.path.isfile(candidat):
+            return candidat
+    return relatif + ", fourni avec le depot du greffon"
+
+
+def annonce_cout(role):
+    """Ce que coute reellement une option, derive de la table des modeles.
+
+    Un libelle ecrit a la main derive : celui du sourire annoncait "environ
+    150 Mo telecharges au premier usage" alors qu'aucune adresse n'etait
+    declaree pour ce modele - la case promettait donc un telechargement que le
+    code ne pouvait pas faire, et l'utilisateur ne l'apprenait qu'apres coup.
+    Le libelle se calcule ici, a partir de la seule chose qui fasse foi : la
+    presence ou non d'une source.
+    """
+    entree = MODELES[role]
+    taille = octets_lisibles(entree.get("taille_declaree", 0))
+    if not entree["sources"]:
+        convertisseur = convertisseur_du_modele(role)
+        if convertisseur:
+            # Annoncer une absence sans dire qu'elle se repare reviendrait a
+            # decrire la case comme morte alors qu'elle ne l'est pas.
+            return ("modele a fabriquer : %s le produit en une fois, puis "
+                    "cochez de nouveau" % convertisseur)
+        return ("modele a fournir : deposez %s dans le dossier des modeles, le "
+                "greffon n'a pas d'adresse pour le telecharger"
+                % entree["fichier"])
+    if entree.get("source_verifiee"):
+        return "environ %s telecharges au premier usage" % taille
+    # Distinguer ce qui est mesure de ce qui est declare, jusque dans
+    # l'interface : une adresse que personne n'a jointe depuis ce depot ne
+    # doit pas etre annoncee comme un telechargement acquis.
+    return ("telechargement d'environ %s tente au premier usage ; l'adresse "
+            "n'a pas ete verifiee, et le greffon degrade si elle ne repond pas"
+            % taille)
 
 
 def octets_lisibles(n):
@@ -1371,7 +1484,8 @@ def main():
     with open(sys.argv[1], "r", encoding="utf-8", errors="replace") as f:
         cfg = json.load(f)
     sortie = cfg.get("sortie")
-    resultat = {"ok": False, "fournisseur": "", "detail": ""}
+    resultat = {"ok": False, "fournisseur": "", "detail": "",
+                "disponibles": [], "demandes": [], "version": ""}
     try:
         import numpy as np
         import onnxruntime as ort
@@ -1379,8 +1493,23 @@ def main():
         options = ort.SessionOptions()
         options.enable_mem_pattern = False
         options.enable_cpu_mem_arena = False
+
+        # Croiser la demande avec les fournisseurs reellement disponibles,
+        # exactement comme le fait le worker. Sans ce croisement, un seul nom
+        # inconnu de cette build - ROCMExecutionProvider sur une machine
+        # Windows, par exemple - fait rejeter la liste ENTIERE par le moteur,
+        # qui se rabat alors sur le processeur. L'acceleration etait donc
+        # declaree impossible sur des postes ou elle fonctionnait, et le
+        # message accusait cuDNN.
+        disponibles = list(ort.get_available_providers())
+        resultat["disponibles"] = disponibles
+        demandes = [p for p in cfg["fournisseurs"] if p in disponibles]
+        if "CPUExecutionProvider" not in demandes:
+            demandes.append("CPUExecutionProvider")
+        resultat["demandes"] = demandes
+
         session = ort.InferenceSession(cfg["modele"], sess_options=options,
-                                       providers=cfg["fournisseurs"])
+                                       providers=demandes)
         alimentation = {}
         for entree in session.get_inputs():
             forme = []
@@ -1399,6 +1528,12 @@ def main():
         resultat["ok"] = True
     except Exception as e:
         resultat["detail"] = str(e)[:600]
+    try:
+        import onnxruntime as ort
+        resultat["disponibles"] = list(ort.get_available_providers())
+        resultat["version"] = str(getattr(ort, "__version__", ""))
+    except Exception:
+        pass
     try:
         with open(sortie, "w", encoding="utf-8") as f:
             json.dump(resultat, f, indent=2)
@@ -1438,14 +1573,44 @@ def valider_acceleration(python_venv, env, modele, taille_entree, dossier_travai
             donnees = json.load(f)
     except Exception:
         donnees = {}
+
+    constat = {"ok": False, "fournisseur": donnees.get("fournisseur", ""),
+               "detail": "", "disponibles": donnees.get("disponibles") or [],
+               "version": donnees.get("version", ""),
+               "journal": lignes_diagnostic_moteur(lire_journal(log))}
     if depasse:
-        return False, "", "l'inference de validation a depasse %d s" % DELAI_VALIDATION_GPU_S
+        constat["detail"] = ("l'inference de validation a depasse %d s"
+                             % DELAI_VALIDATION_GPU_S)
+        return constat
     if annule:
-        return False, "", "validation interrompue"
+        constat["detail"] = "validation interrompue"
+        return constat
     if code != 0 or not donnees.get("ok"):
-        detail = donnees.get("detail") or lire_journal(log).strip()[-300:]
-        return False, "", detail or "l'inference de validation a echoue (code %s)" % code
-    return True, donnees.get("fournisseur", ""), ""
+        constat["detail"] = (donnees.get("detail")
+                             or lire_journal(log).strip()[-300:]
+                             or "l'inference de validation a echoue (code %s)" % code)
+        return constat
+    constat["ok"] = True
+    return constat
+
+
+def lignes_diagnostic_moteur(journal_texte):
+    """Ce que le moteur a dit lui-meme de son chargement de fournisseur.
+
+    onnxruntime ecrit sur la sortie d'erreur la raison exacte pour laquelle il
+    n'a pas pu charger un fournisseur - bibliotheque absente, version de cuDNN
+    inattendue. C'est la seule source qui nomme la cause ; le greffon, lui, ne
+    voit que le symptome.
+    """
+    interessantes = []
+    for ligne in (journal_texte or "").splitlines():
+        bas = ligne.lower()
+        if any(mot in bas for mot in ("cuda", "cudnn", "provider", "libonnxruntime",
+                                      "tensorrt", "rocm", "directml")):
+            ligne = ligne.strip()
+            if ligne and ligne not in interessantes:
+                interessantes.append(ligne[:220])
+    return interessantes[-4:]
 
 
 def installer_cudnn(python_venv, env, dossier_travail, progression):
@@ -1617,6 +1782,141 @@ def preparer_environnement(pile, dossier_travail, reinstaller, progression):
     return py
 
 
+def verdict_acceleration():
+    """Verdict d'acceleration deja constate pour cette pile, ou None.
+
+    La section 17 du scenario est explicite : un echec d'environnement se
+    memorise, faute de quoi le greffon relance a chaque ouverture du filtre un
+    travail dont il connait deja l'issue. C'etait le cas ici - les roues cuDNN
+    etaient retentees et l'inference de controle rejouee a chaque lancement,
+    pour reconstater le meme repli.
+
+    Le verdict est lie a la signature des paquets : si la pile change, il
+    cesse de valoir.
+    """
+    verdict = lire_marqueur().get("acceleration")
+    if not isinstance(verdict, dict):
+        return None
+    if verdict.get("signature") != signature_paquets(STACK_GPU):
+        return None
+    if verdict.get("version_greffon") != PLUGIN_VERSION:
+        # Une nouvelle version peut avoir corrige la validation elle-meme :
+        # c'est arrive. Un verdict rendu par l'ancienne ne vaut plus.
+        return None
+    return verdict
+
+
+def memoriser_verdict_acceleration(ok, constat):
+    marqueur = lire_marqueur()
+    marqueur["acceleration"] = {
+        "verdict": "ok" if ok else "echec",
+        "signature": signature_paquets(STACK_GPU),
+        "version_greffon": PLUGIN_VERSION,
+        "fournisseur": constat.get("fournisseur", ""),
+        "detail": str(constat.get("detail", ""))[:300],
+        "disponibles": constat.get("disponibles") or [],
+        "version_moteur": constat.get("version", ""),
+        "journal": constat.get("journal") or [],
+        "constate_le": time.strftime("%Y-%m-%dT%H:%M:%S"),
+    }
+    ecrire_marqueur(marqueur)
+    journal("verdict d'acceleration memorise: %s (%s)"
+            % (marqueur["acceleration"]["verdict"],
+               marqueur["acceleration"]["fournisseur"] or "aucun"))
+
+
+def taille_dossier(chemin, plafond_fichiers=200000):
+    """Taille d'un dossier, bornee en nombre de fichiers parcourus."""
+    total = 0
+    vus = 0
+    for racine, _, fichiers in os.walk(chemin):
+        for nom in fichiers:
+            vus += 1
+            if vus > plafond_fichiers:
+                return total
+            try:
+                total += os.path.getsize(os.path.join(racine, nom))
+            except OSError:
+                pass
+    return total
+
+
+# Indices lus dans le journal du moteur, du plus precis au plus general. Une
+# cause s'etablit sur une trace, elle ne s'affirme pas : la premiere version de
+# ce message accusait cuDNN de confiance, alors que le journal disait autre
+# chose - une liste de fournisseurs rejetee en bloc, et c'etait un defaut du
+# greffon.
+INDICES_CAUSE = (
+    (("unknown provider type", "ep error"),
+     "Le moteur a rejete la liste de fournisseurs demandee, et non un "
+     "fournisseur en particulier. C'est un defaut du greffon, pas de ce "
+     "poste : signalez ce message."),
+    (("cudnn",),
+     "cuDNN est en cause : absent, introuvable sur le PATH, ou d'une version "
+     "majeure differente de celle qu'attend cette version d'onnxruntime-gpu."),
+    (("failed to load library", "loadlibrary", "cannot open shared object"),
+     "Une bibliotheque du fournisseur GPU n'a pas pu etre chargee. La ligne "
+     "ci-dessus la nomme."),
+    (("cuda_error", "cuda failure", "no kernel image"),
+     "Le pilote ou le runtime CUDA a refuse l'initialisation."),
+)
+
+
+def cause_probable(constat):
+    """Une phrase de cause, appuyee sur ce que le moteur a reellement dit."""
+    texte = " ".join(constat.get("journal") or []).lower()
+    texte += " " + str(constat.get("detail", "")).lower()
+    for motifs, phrase in INDICES_CAUSE:
+        if any(motif in texte for motif in motifs):
+            return phrase
+    disponibles = constat.get("disponibles") or []
+    if "CUDAExecutionProvider" not in disponibles:
+        return ("Le fournisseur GPU n'est meme pas annonce par le moteur : la "
+                "roue installee est une roue processeur, ou sa bibliotheque "
+                "n'a pas pu etre chargee.")
+    return ("Le fournisseur GPU est annonce disponible mais n'a pas ete "
+            "retenu, et le moteur n'en dit pas la raison. Le journal archive "
+            "en contient davantage.")
+
+
+def message_acceleration_ecartee(constat, memorise=False):
+    """Le symptome, l'etat des deux couches, la cause probable, et la suite.
+
+    "le moteur est retombe sur CPUExecutionProvider" est un constat, pas un
+    diagnostic : l'utilisateur ne peut rien en faire. Le message doit joindre
+    ce que declare le moteur et ce que voit le systeme - les deux couches de
+    la section 18 - puis dire ce qui se passe maintenant.
+    """
+    present, detail_runtime = sonde_runtime_cuda()
+    disponibles = constat.get("disponibles") or []
+    lignes = ["Acceleration materielle ecartee apres une inference de controle."]
+    if memorise:
+        lignes[0] = ("Acceleration materielle ecartee : constat deja etabli "
+                     "lors d'un lancement precedent.")
+    lignes.append("  Constat : le calcul s'est fait sur %s."
+                  % (constat.get("fournisseur") or "le processeur"))
+    lignes.append("  Fournisseurs declares par le moteur : %s"
+                  % (", ".join(disponibles) or "aucun constate"))
+    lignes.append("  Runtime du systeme : %s" % detail_runtime)
+    for ligne in (constat.get("journal") or []):
+        lignes.append("  Moteur : " + ligne)
+    if constat.get("detail"):
+        lignes.append("  Detail : " + premiere_phrase(str(constat["detail"])))
+    lignes.append(cause_probable(constat))
+    lignes.append("Le traitement se poursuit sur le processeur : meme "
+                  "resultat, seulement plus lent.")
+    dossier = os.path.join(get_data_dir(), nom_venv(STACK_GPU))
+    if os.path.isdir(dossier):
+        lignes.append("L'environnement GPU installe occupe %s ici :"
+                      % octets_lisibles(taille_dossier(dossier)))
+        lignes.append("  " + dossier)
+    lignes.append("Ce constat est memorise : les lancements suivants passeront "
+                  "directement au processeur, sans rien reinstaller ni "
+                  "reessayer. Pour refaire l'essai, cochez \"Reinstaller "
+                  "l'environnement IA\".")
+    return "\n".join(lignes)
+
+
 def refus_gpu(detail):
     """Message du seul endroit ou le greffon decline une demande explicite de
     l'utilisateur : il doit donc expliquer ce qui manque et comment s'en
@@ -1698,14 +1998,29 @@ def fichier_semble_onnx(chemin):
     return True, "protobuf ONNX plausible"
 
 
+def taille_min_modele(nom_fichier):
+    """Plancher de vraisemblance, par modele.
+
+    Un plancher unique pour toute la table serait une hypothese sur la taille
+    des modeles : YuNet pese 227 Ko la ou les autres pesent des centaines de
+    megaoctets, et un plancher a un megaoctet le rejetterait purement et
+    simplement.
+    """
+    for entree in MODELES.values():
+        if entree["fichier"] == nom_fichier:
+            return int(entree.get("taille_min") or MODELE_TAILLE_MIN_BYTES)
+    return MODELE_TAILLE_MIN_BYTES
+
+
 def controler_vraisemblance(chemin, nom_fichier):
     """Controle de taille en amont du hash : un fichier nul, tronque ou
     aberrant est rejete avant meme d'etre lu integralement."""
     taille = os.path.getsize(chemin)
-    if taille < MODELE_TAILLE_MIN_BYTES:
+    plancher = taille_min_modele(nom_fichier)
+    if taille < plancher:
         raise ValueError("Le fichier '%s' est tronque (%s, minimum attendu %s)."
                          % (nom_fichier, octets_lisibles(taille),
-                            octets_lisibles(MODELE_TAILLE_MIN_BYTES)))
+                            octets_lisibles(plancher)))
     if taille > MODELE_TAILLE_MAX_BYTES:
         raise ValueError("Le fichier '%s' depasse la taille vraisemblable d'un "
                          "modele de cette suite (%s)."
@@ -1795,6 +2110,27 @@ def tofu(nom_fichier, digest, avertissements):
             json.dump(connues, f, indent=2)
     except Exception:
         pass
+
+
+def motif_reseau(erreur):
+    """Traduit un echec reseau en une phrase qui oriente l'utilisateur.
+
+    "HTTP Error 401: Unauthorized" ne dit rien a qui veut simplement un
+    modele. Un 401 ou un 403 sur un depot public signifie, neuf fois sur dix,
+    que le depot a disparu ou est devenu prive - pas que le reseau est coupe,
+    et donc pas qu'il faut reessayer plus tard.
+    """
+    code = getattr(erreur, "code", None)
+    if code in (401, 403):
+        return ("cette adresse demande une authentification ou n'existe plus "
+                "(HTTP %s)" % code)
+    if code == 404:
+        return "cette adresse n'existe plus (HTTP 404)"
+    if code == 429:
+        return "le serveur refuse temporairement les telechargements (HTTP 429)"
+    if isinstance(code, int) and code >= 500:
+        return "le serveur est en panne (HTTP %s)" % code
+    return premiere_phrase(str(erreur))
 
 
 def taille_distante(url):
@@ -1905,7 +2241,7 @@ def telecharger_modele(role, progression):
         try:
             return _telecharger_url(url, nom_fichier, reference, progression)
         except Exception as e:
-            echecs.append("%s : %s" % (url, premiere_phrase(str(e))))
+            echecs.append("%s : %s" % (url, motif_reseau(e)))
             journal("source en echec %s : %s" % (url, e))
     raise RuntimeError("RAISON: aucune source n'a fourni '%s' (%s)."
                        % (nom_fichier, " | ".join(echecs)[:400]))
@@ -2044,10 +2380,25 @@ def message_depot_manuel(roles, entete=None):
                          entree["taille_entree"], entree["taille_entree"]))
         for url in sources_du_modele(role):
             lignes.append("      " + url)
+        convertisseur = convertisseur_du_modele(role)
+        if convertisseur:
+            lignes.append("      ce modele se fabrique : " + convertisseur)
     lignes.append("")
     lignes.append("Un autre export ONNX du meme modele convient s'il respecte "
                   "ce format d'entree.")
+    lignes.append("")
+    lignes.append("Une adresse de telechargement peut aussi etre declaree dans "
+                  "ce fichier :")
+    lignes.append("  " + get_sources_utilisateur_path())
+    lignes.append("  Exemple : {\"%s\": [\"https://exemple.org/%s\"]}"
+                  % (roles[0], MODELES[roles[0]]["fichier"]))
     return "\n".join(lignes)
+
+
+# Roles qui servent la meme capacite. Si l'un repond, l'absence de l'autre
+# n'est pas une degradation et ne merite aucun message : deux detecteurs pour
+# une seule detection.
+ROLES_ALTERNATIFS = ((ROLE_DETECTION, ROLE_DETECTION_YUNET),)
 
 
 def resoudre_modeles(roles, autoriser_telechargement, progression, avertissements):
@@ -2055,35 +2406,47 @@ def resoudre_modeles(roles, autoriser_telechargement, progression, avertissement
 
     Un modele indisponible degrade : l'operation passe sur son chemin sans IA
     quand il en existe un, ou elle est annulee et le motif est dit en une
-    phrase. Le message de depot manuel n'apparait qu'en dernier recours, quand
-    plus rien n'est possible - c'est-a-dire quand aucun role demande n'a pu
-    etre servi et qu'aucun ne dispose d'un repli.
+    phrase.
+
+    Et le message dit comment y remedier. Diagnostiquer une absence n'est pas
+    la reparer : constater qu'un modele manque sans indiquer ni ou le deposer
+    ni comment en declarer l'adresse oblige l'utilisateur a quitter GIMP pour
+    chercher, ce qui est exactement ce que ce greffon ne doit jamais demander.
     """
     resolus = {}
-    manquants = []
+    motifs = {}
     for role in roles:
         progression("Verification du modele %s..." % MODELES[role]["fichier"])
         try:
             resolus[role] = obtenir_modele(role, autoriser_telechargement,
                                            progression, avertissements)
         except Exception as e:
-            motif = premiere_phrase(str(e))
             resolus[role] = None
-            manquants.append(role)
-            journal("modele %s indisponible : %s" % (role, motif))
-            if role in ROLES_AVEC_REPLI:
-                avertissements.append(
-                    "Modele '%s' indisponible (%s) : l'etape %s se fait sans IA."
-                    % (MODELES[role]["fichier"], motif, role))
-            else:
-                avertissements.append(
-                    "Modele '%s' indisponible (%s) : l'etape %s a ete ignoree."
-                    % (MODELES[role]["fichier"], motif, role))
-    if manquants and all(role not in ROLES_AVEC_REPLI for role in roles):
+            motifs[role] = premiere_phrase(str(e))
+            journal("modele %s indisponible : %s" % (role, motifs[role]))
+
+    couverts = set()
+    for groupe in ROLES_ALTERNATIFS:
+        if any(resolus.get(autre) for autre in groupe):
+            couverts.update(groupe)
+
+    manquants = [role for role in roles
+                 if resolus.get(role) is None and role not in couverts]
+    for role in manquants:
+        if role in ROLES_AVEC_REPLI:
+            avertissements.append(
+                "Modele '%s' indisponible (%s) : l'etape %s se fait sans IA."
+                % (MODELES[role]["fichier"], motifs.get(role, "motif inconnu"),
+                   role))
+        else:
+            avertissements.append(
+                "Modele '%s' indisponible (%s) : l'etape %s a ete ignoree."
+                % (MODELES[role]["fichier"], motifs.get(role, "motif inconnu"),
+                   role))
+    if manquants:
         avertissements.append(message_depot_manuel(
             manquants,
-            "Aucun des modeles necessaires n'a pu etre obtenu ; les etapes "
-            "concernees ont ete ignorees."))
+            "Voici comment fournir le ou les modeles manquants."))
     return resolus
 
 
@@ -2143,22 +2506,129 @@ def ecrire_inventaire(details):
 #    produire un rapport de bogue : si le diagnostic depend de ce geste, il
 #    n'existe pas.
 #
-#    Le dossier logs/ est partage par la suite et l'horodatage est le meme pour
-#    tous les greffons : la purge conserve donc les dix incidents les plus
-#    recents de la suite, quel que soit le greffon qui les a produits. Le
-#    fichier incident.json dit lequel.
+#    Le dossier logs/ est partage par toute la suite. Chaque archive porte un
+#    incident.json qui nomme le greffon qui l'a produite, et la purge ne
+#    s'applique qu'aux siennes : voir archives_du_greffon().
 # ==============================================================================
+NOM_FICHIER_INCIDENT = "incident.json"
+# Age au-dela duquel une archive que personne ne revendique peut etre
+# supprimee. Elles viennent des versions anterieures a ce marqueur, et des
+# greffons de la suite qui ne le posent pas encore.
+JOURS_ARCHIVES_ORPHELINES = 30
+
+
+def _inventaire_archives(racine):
+    """Repartit les archives de logs/ : les miennes, et celles que personne ne
+    revendique. Chacune triee de la plus ancienne a la plus recente, datee par
+    son contenu et non par son nom.
+
+    Le dossier logs/ est partage, et deux conventions de nommage y cohabitent
+    dans la suite : "2026-09-16_19-44-05" pour certains greffons,
+    "20260916-194405-000123" pour d'autres. En ASCII le tiret (0x2D) precede le
+    chiffre (0x30) : un tri alphabetique place donc systematiquement la
+    premiere forme en tete, et une purge qui s'y fierait supprimerait toujours
+    les archives des autres greffons avant les siennes, quel que soit leur age.
+    Dix incidents d'un greffon suffiraient a effacer tout l'historique d'un
+    autre - sans le moindre message, puisqu'il n'y a pas d'incident quand un
+    greffon fonctionne.
+
+    Deux consequences, tirees de ce constat :
+
+    - on ne purge que ce qu'on a produit, reconnaissable a son incident.json ;
+    - on date par la date du fichier, pas par le nom du dossier, pour ne
+      dependre d'aucune convention de nommage.
+
+    Une archive dont l'incident.json n'a pas pu etre ecrit n'est jamais
+    supprimee : elle restera, ce qui est preferable a effacer celle d'un
+    voisin.
+    """
+    miennes = []
+    orphelines = []
+    try:
+        noms = os.listdir(racine)
+    except Exception:
+        return [], []
+    for nom in noms:
+        chemin = os.path.join(racine, nom)
+        if not os.path.isdir(chemin):
+            continue
+        marque = os.path.join(chemin, NOM_FICHIER_INCIDENT)
+        donnees = None
+        if os.path.isfile(marque):
+            try:
+                with open(marque, "r", encoding="utf-8", errors="replace") as f:
+                    donnees = json.load(f)
+            except Exception:
+                donnees = None
+        if isinstance(donnees, dict) and donnees.get("greffon") == PLUGIN_ID:
+            try:
+                date = os.path.getmtime(marque)
+            except Exception:
+                date = 0.0
+            miennes.append((date, nom, chemin))
+        elif not isinstance(donnees, dict):
+            # Personne ne revendique cette archive : elle est anterieure au
+            # marqueur, ou vient d'un greffon qui ne le pose pas encore.
+            try:
+                date = os.path.getmtime(chemin)
+            except Exception:
+                date = 0.0
+            orphelines.append((date, nom, chemin))
+    miennes.sort()
+    orphelines.sort()
+    return miennes, orphelines
+
+
+def archives_du_greffon(racine):
+    """Archives produites par ce greffon, de la plus ancienne a la plus
+    recente."""
+    return [chemin for _, _, chemin in _inventaire_archives(racine)[0]]
+
+
+def purger_journaux(racine):
+    """Purge les archives de ce greffon, et resorbe le stock orphelin.
+
+    Une archive que personne ne revendique n'est supprimee qu'a deux
+    conditions reunies : etre plus vieille que JOURS_ARCHIVES_ORPHELINES, et
+    ne pas figurer parmi les ARCHIVES_A_CONSERVER plus recentes d'entre elles.
+    Un greffon de la suite qui n'aurait pas encore recu ce correctif garde
+    ainsi ses archives recentes, et le stock ancien se resorbe quand meme.
+
+    Retourne les chemins supprimes, pour que le comportement soit verifiable
+    autrement que par une inspection du dossier.
+    """
+    miennes, orphelines = _inventaire_archives(racine)
+    limite = time.time() - JOURS_ARCHIVES_ORPHELINES * 86400
+    condamnees = [chemin for _, _, chemin in miennes[:-ARCHIVES_A_CONSERVER]]
+    condamnees += [chemin for date, _, chemin
+                   in orphelines[:-ARCHIVES_A_CONSERVER] if date < limite]
+    for chemin in condamnees:
+        shutil.rmtree(chemin, ignore_errors=True)
+    return condamnees
+
+
 def archiver_journaux(dossier_travail, contexte=None):
     try:
         racine = get_logs_dir()
         # Deux incidents dans la meme seconde ne doivent pas s'ecraser : c'est
         # justement dans une serie d'echecs rapproches que les journaux
-        # comptent. Les microsecondes gardent aussi l'ordre alphabetique
-        # identique a l'ordre chronologique, dont depend la purge ci-dessous.
+        # comptent.
         horodatage = "%s-%06d" % (time.strftime("%Y%m%d-%H%M%S"),
                                   time.time_ns() // 1000 % 1000000)
         cible = os.path.join(racine, horodatage)
         os.makedirs(cible, exist_ok=True)
+        # L'incident est marque avant la copie : si celle-ci echoue a
+        # mi-chemin, l'archive reste identifiable, donc purgeable.
+        try:
+            with open(os.path.join(cible, NOM_FICHIER_INCIDENT), "w",
+                      encoding="utf-8") as f:
+                json.dump({"greffon": PLUGIN_ID, "version": PLUGIN_VERSION,
+                           "pile": pile_active(), "api_gimp": API_GIMP,
+                           "plateforme": sys.platform,
+                           "horodatage": horodatage,
+                           "contexte": contexte or {}}, f, indent=2)
+        except Exception:
+            pass
         for nom in os.listdir(dossier_travail):
             if not (nom.endswith(".log") or nom.endswith(".json")
                     or nom.endswith(".py")):
@@ -2168,20 +2638,7 @@ def archiver_journaux(dossier_travail, contexte=None):
                              os.path.join(cible, nom))
             except Exception:
                 pass
-        try:
-            with open(os.path.join(cible, "incident.json"), "w",
-                      encoding="utf-8") as f:
-                json.dump({"greffon": PLUGIN_ID, "version": PLUGIN_VERSION,
-                           "pile": pile_active(), "api_gimp": API_GIMP,
-                           "plateforme": sys.platform,
-                           "horodatage": horodatage,
-                           "contexte": contexte or {}}, f, indent=2)
-        except Exception:
-            pass
-        entrees = sorted(d for d in os.listdir(racine)
-                         if os.path.isdir(os.path.join(racine, d)))
-        for vieux in entrees[:-ARCHIVES_A_CONSERVER]:
-            shutil.rmtree(os.path.join(racine, vieux), ignore_errors=True)
+        purger_journaux(racine)
         return cible
     except Exception as e:
         journal("archivage impossible: %s" % e)
@@ -2907,6 +3364,76 @@ def filtrer_visages(boites, scores, cfg, largeur, hauteur, roi, np, notes):
     return [item[0] for item in retenus], [item[1] for item in retenus]
 
 
+def detecter_visages_yunet(pivot, chemin, cfg, np, cv2, notes):
+    """Detection par YuNet, pilotee par cv2.FaceDetectorYN.
+
+    OpenCV fait lui-meme le pretraitement et le decodage : il n'y a donc ni
+    mise en lettre-boite ni lecture de sortie brute a ecrire ici, c'est-a-dire
+    ni l'un ni l'autre a se tromper. Restent deux contrats a respecter, et ce
+    sont les deux seuls endroits ou ce chemin peut echouer en silence :
+
+    - l'entree se donne en BGR, alors que le pivot est en RGB. Une inversion
+      ne leve rien : elle fait baisser le score et deplace legerement la boite.
+      Le banc de test ne sait pas la distinguer, et le dit.
+    - l'image est reduite avant detection, donc les boites rendues sont dans
+      l'espace reduit. Les remettre a l'echelle est indispensable, et cette
+      conversion-la est couverte par un test geometrique sur le vrai modele.
+    """
+    hauteur, largeur = pivot.shape[:2]
+    cote_max = max(64, int(cfg["yunet_cote_max"]))
+    echelle = min(1.0, float(cote_max) / float(max(hauteur, largeur)))
+    lt = max(1, int(round(largeur * echelle)))
+    ht = max(1, int(round(hauteur * echelle)))
+    if echelle < 1.0:
+        reduit = cv2.resize(pivot, (lt, ht), interpolation=cv2.INTER_AREA)
+    else:
+        reduit = pivot
+    bgr = cv2.cvtColor(reduit, cv2.COLOR_RGB2BGR)
+
+    fabrique = getattr(cv2, "FaceDetectorYN", None)
+    creer = getattr(fabrique, "create", None) if fabrique else None
+    if creer is None:
+        creer = getattr(cv2, "FaceDetectorYN_create", None)
+    if creer is None:
+        raise ErreurModele("cette version d'OpenCV n'expose pas FaceDetectorYN")
+
+    detecteur = creer(chemin, "", (lt, ht), float(cfg["score_min_visage"]),
+                      float(cfg["nms_recouvrement_max"]),
+                      max(1, int(cfg["visages_max"])))
+    try:
+        detecteur.setInputSize((lt, ht))
+        try:
+            _, trouves = detecteur.detect(bgr)
+        except MemoryError:
+            raise
+        except Exception as e:
+            raise ErreurInference("calcul refuse par le moteur: " + str(e))
+    finally:
+        detecteur = None
+        purger_memoire(float(cfg["pause_entre_modeles_s"]))
+
+    boites = []
+    scores = []
+    if trouves is None:
+        return boites, scores
+    for ligne in np.asarray(trouves, dtype=np.float32):
+        if ligne.shape[0] < 4:
+            continue
+        # Retour vers l'espace de l'image d'origine. L'oublier placerait le
+        # traitement sur le quart superieur gauche de toute grande photo.
+        bx = max(0.0, float(ligne[0]) / echelle)
+        by = max(0.0, float(ligne[1]) / echelle)
+        bl = min(float(ligne[2]) / echelle, largeur - bx)
+        bh = min(float(ligne[3]) / echelle, hauteur - by)
+        if bl <= 1.0 or bh <= 1.0:
+            continue
+        boites.append([bx, by, bl, bh])
+        scores.append(float(ligne[14]) if ligne.shape[0] > 14 else 0.0)
+    notes.append("YuNet a examine l'image en %dx%d (facteur %.3f)"
+                 % (lt, ht, echelle))
+    return boites, scores
+
+
 def detecter_visages(pivot, cfg, modele, fournisseurs, np, cv2, notes):
     """Retourne (boites, scores, moteur, fournisseur).
 
@@ -2919,6 +3446,10 @@ def detecter_visages(pivot, cfg, modele, fournisseurs, np, cv2, notes):
     hauteur, largeur = pivot.shape[:2]
     roi = cfg.get("roi_visages") or None
 
+    # Un modele YOLO present sur le disque l'a ete deliberement : le greffon ne
+    # va jamais le chercher de lui-meme. Il passe donc devant YuNet, qu'il
+    # telecharge. Un choix explicite ne se satisfait pas d'un substitut
+    # silencieux.
     if modele:
         try:
             import onnxruntime as ort
@@ -2949,13 +3480,32 @@ def detecter_visages(pivot, cfg, modele, fournisseurs, np, cv2, notes):
             if boites:
                 return boites, scores, os.path.basename(modele), fournisseur
             notes.append("le modele de detection n'a trouve aucun visage, "
-                         "essai de la cascade de Haar")
+                         "essai du detecteur suivant")
         except MemoryError:
             raise
         except Exception as e:
             genre = noter_echec("detection", e)
-            notes.append("detection ONNX en echec (%s: %s), repli sur la "
-                         "cascade de Haar" % (genre, str(e)[:200]))
+            notes.append("detection ONNX en echec (%s: %s), passage au "
+                         "detecteur suivant" % (genre, str(e)[:200]))
+
+    chemin_yunet = cfg["modeles"].get("detection_yunet")
+    if chemin_yunet:
+        try:
+            boites, scores = detecter_visages_yunet(pivot, chemin_yunet, cfg,
+                                                    np, cv2, notes)
+            boites, scores = filtrer_visages(boites, scores, cfg, largeur,
+                                             hauteur, roi, np, notes)
+            if boites:
+                return (boites, scores, os.path.basename(chemin_yunet),
+                        "processeur")
+            notes.append("YuNet n'a trouve aucun visage, essai de la cascade "
+                         "de Haar")
+        except MemoryError:
+            raise
+        except Exception as e:
+            genre = noter_echec("detection_yunet", e)
+            notes.append("YuNet en echec (%s: %s), repli sur la cascade de "
+                         "Haar" % (genre, str(e)[:200]))
 
     cascade, detail = detecteur_haar(cv2)
     if cascade is not None:
@@ -3634,6 +4184,9 @@ def roles_necessaires(operations):
     """
     roles = []
     if any(op in ("anonymiser", "sourire", "ameliorer") for op in operations):
+        # Les deux detecteurs sont resolus : YuNet est celui que le greffon
+        # sait aller chercher, l'autre n'est utilise que s'il est deja la.
+        roles.append(ROLE_DETECTION_YUNET)
         roles.append(ROLE_DETECTION)
     if "sourire" in operations:
         roles.append(ROLE_SOURIRE)
@@ -3757,24 +4310,13 @@ class IaVisageStudioPlugin(Gimp.PlugIn):
              "necessaire pour cette etape. Prioritaire : elle annule le "
              "sourire et l'amelioration.", False),
             ("smile", "Faire sourire les visages",
-             "Modifie l'expression (modele %s, environ %s telecharges au "
-             "premier usage)." % (MODELES[ROLE_SOURIRE]["fichier"],
-                                  octets_lisibles(
-                                      MODELES[ROLE_SOURIRE]["taille_declaree"])),
-             False),
+             "Modifie l'expression (%s)." % annonce_cout(ROLE_SOURIRE), False),
             ("enhance", "Ameliorer les visages",
-             "Restauration des details (modele %s, environ %s telecharges au "
-             "premier usage). Sans ce modele, un rehaussement sans IA est "
-             "applique." % (MODELES[ROLE_AMELIORATION]["fichier"],
-                            octets_lisibles(
-                                MODELES[ROLE_AMELIORATION]["taille_declaree"])),
-             False),
+             "Restauration des details (%s). Sans ce modele, un rehaussement "
+             "sans IA est applique." % annonce_cout(ROLE_AMELIORATION), False),
             ("colorize", "Coloriser l'image",
-             "Colorise toute l'image en conservant sa luminance (modele %s, "
-             "environ %s telecharges au premier usage)."
-             % (MODELES[ROLE_COLORISATION]["fichier"],
-                octets_lisibles(MODELES[ROLE_COLORISATION]["taille_declaree"])),
-             False),
+             "Colorise toute l'image en conservant sa luminance (%s)."
+             % annonce_cout(ROLE_COLORISATION), False),
             ("allow-download", "Telecharger les modeles manquants",
              "Telechargement automatique sous %s par fichier, taille annoncee "
              "avant de commencer." % octets_lisibles(AUTO_DOWNLOAD_MAX_BYTES),
@@ -3938,6 +4480,7 @@ class IaVisageStudioPlugin(Gimp.PlugIn):
                 "pivot_type": PIVOT_TYPE,
                 "pause_entre_modeles_s": PAUSE_ENTRE_MODELES_S,
                 "taille_entree_detection": MODELES[ROLE_DETECTION]["taille_entree"],
+                "yunet_cote_max": YUNET_COTE_MAX,
                 "detection_normalisation": MODELES[ROLE_DETECTION]["normalisation"],
                 "detection_nombre_classes": 1,
                 "score_min_visage": SCORE_MIN_VISAGE,
@@ -4124,19 +4667,33 @@ class IaVisageStudioPlugin(Gimp.PlugIn):
         l'autre n'a pas servi. Un message d'erreur a la place d'un calque
         serait un echec de conception.
         """
+        # Un echec deja constate ne se reconstate pas. Sans cette memoire, les
+        # roues cuDNN etaient retentees et l'inference de controle rejouee a
+        # chaque ouverture du filtre, pour aboutir au meme repli.
+        connu = verdict_acceleration()
+        if connu and connu.get("verdict") == "echec" and not reinstaller:
+            journal("acceleration deja ecartee le %s, essai non rejoue"
+                    % connu.get("constate_le"))
+            avertissements.append(message_acceleration_ecartee(connu, True))
+            return (False, preparer_environnement(STACK_CPU, dossier_travail,
+                                                  False, progression),
+                    clean_env(), FOURNISSEURS_CPU)
+
         installer_cudnn(python_venv, clean_env(), dossier_travail, progression)
         env_gpu = clean_env(dossiers_dll_paquets(python_venv))
 
         modele = None
         taille = 64
         for role in (ROLE_DETECTION, ROLE_SOURIRE, ROLE_AMELIORATION,
-                     ROLE_COLORISATION):
+                     ROLE_COLORISATION, ROLE_DETECTION_YUNET):
             if modeles.get(role):
                 modele = modeles[role]
                 taille = MODELES[role]["taille_entree"]
                 break
 
         if modele is None:
+            # Rien a memoriser : ce n'est pas un verdict sur le materiel, mais
+            # l'absence du sujet de l'experience.
             avertissements.append(
                 "Acceleration materielle non validee : aucun modele n'etait "
                 "disponible pour l'inference de controle. Le traitement se "
@@ -4145,20 +4702,23 @@ class IaVisageStudioPlugin(Gimp.PlugIn):
                                                   False, progression),
                     clean_env(), FOURNISSEURS_CPU)
 
-        ok, fournisseur, detail = valider_acceleration(
-            python_venv, env_gpu, modele, taille, dossier_travail,
-            FOURNISSEURS_GPU, progression)
-        if ok and fournisseur and fournisseur != "CPUExecutionProvider":
+        constat = valider_acceleration(python_venv, env_gpu, modele, taille,
+                                       dossier_travail, FOURNISSEURS_GPU,
+                                       progression)
+        fournisseur = constat.get("fournisseur") or ""
+        reussi = bool(constat.get("ok")) and fournisseur \
+            and fournisseur != "CPUExecutionProvider"
+        # Le verdict s'ecrit tant que la pile GPU est la pile active : le
+        # marqueur en depend.
+        memoriser_verdict_acceleration(reussi, constat)
+        if reussi:
             journal("acceleration validee par inference reelle: " + fournisseur)
             return True, python_venv, env_gpu, FOURNISSEURS_GPU
 
-        motif = detail or ("le moteur est retombe sur %s"
-                           % (fournisseur or "le processeur"))
-        avertissements.append(
-            "Acceleration materielle ecartee apres une inference de controle : "
-            "%s.\nLe traitement se poursuit sur le processeur : meme resultat, "
-            "seulement plus lent." % premiere_phrase(motif))
-        journal("acceleration ecartee: " + str(motif)[:200])
+        avertissements.append(message_acceleration_ecartee(constat))
+        journal("acceleration ecartee: %s | %s"
+                % (fournisseur or "aucun fournisseur",
+                   str(constat.get("detail"))[:150]))
         return (False, preparer_environnement(STACK_CPU, dossier_travail, False,
                                               progression),
                 clean_env(), FOURNISSEURS_CPU)

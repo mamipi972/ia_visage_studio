@@ -42,7 +42,11 @@ import unicodedata
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 RACINE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-FICHIER_GREFFON = os.path.join(RACINE, "ia_visage_studio.py")
+# Greffon controle. La variable d'environnement existe pour que la preuve par
+# mutation puisse soumettre une copie mutee a ce meme controle : un controle
+# dont on n'a pas verifie qu'il sait echouer n'est pas un controle.
+FICHIER_GREFFON = (os.environ.get("IA_VISAGE_GREFFON", "").strip()
+                   or os.path.join(RACINE, "ia_visage_studio.py"))
 TABLE_DES_VALEURS = os.path.join(RACINE, "TABLE_DES_VALEURS.md")
 
 # Ressources partagees par toute la suite. Un nom modifie d'un seul cote
@@ -333,6 +337,25 @@ def main():
              % (sorted(oubliees) or "aucun oubli"))
     notes.append("  NOTE  %d cle(s) de configuration lue(s) par le worker"
                  % len(lues))
+
+    # 6 bis. Toute demande de fournisseurs est croisee avec le disponible.
+    #
+    # Le worker et le script de validation sont deux copies de la meme regle,
+    # et elles ont derive : le worker croisait, la validation non. Un seul nom
+    # inconnu de la build - ROCMExecutionProvider sous Windows - faisait
+    # rejeter la liste entiere par onnxruntime, qui se rabattait sur le
+    # processeur. L'acceleration etait declaree impossible sur des postes ou
+    # elle marchait. Ce controle est le prix de la duplication imposee par la
+    # section 1.
+    motif_croisement = r"for\s+\w+\s+in\s+cfg\[\s*.fournisseurs.\s*\]\s+if\s+\w+\s+in"
+    croise_worker = bool(re.search(
+        r"\[p for p in demandes if p in disponibles\]", worker or ""))
+    croise_validation = bool(re.search(motif_croisement, validation or ""))
+    verifier(croise_worker,
+             "le worker croise les fournisseurs demandes avec les disponibles")
+    verifier(croise_validation,
+             "le script de validation croise lui aussi : sans cela, un seul "
+             "fournisseur inconnu de la build fait rejeter toute la liste")
 
     module, bac, sauve = charger_greffon_hors_gimp()
     try:

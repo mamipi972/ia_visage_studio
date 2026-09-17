@@ -26,6 +26,7 @@ Trois pieges que ce banc traite explicitement :
 
 import io
 import os
+import subprocess
 import shutil
 import sys
 import tempfile
@@ -38,6 +39,7 @@ CHEMIN_GREFFON = os.path.join(RACINE, "ia_visage_studio.py")
 import tests_worker
 import tests_unitaires
 import tests_integration
+import tests_yunet
 
 
 # ---------------------------------------------------------------------------
@@ -198,6 +200,55 @@ MUTATIONS_WORKER = [
 # ---------------------------------------------------------------------------
 MUTATIONS_GREFFON = [
     {
+        "nom": "le libelle ignore le convertisseur declare",
+        "pourquoi": "la case annoncerait un modele a fournir alors que le "
+                    "depot livre de quoi le fabriquer : l'utilisateur "
+                    "renoncerait a une operation disponible, et rien ne le "
+                    "detromperait",
+        # Le motif complet, commentaire compris : les deux messages qui
+        # nomment le convertisseur ouvrent sur les memes deux lignes, et un
+        # motif ambigu muterait celui qu'on ne croit pas.
+        "remplacements": [(
+            "        convertisseur = convertisseur_du_modele(role)\n"
+            "        if convertisseur:\n"
+            "            # Annoncer une absence sans dire qu'elle se repare "
+            "reviendrait a\n",
+            "        convertisseur = None\n"
+            "        if convertisseur:\n"
+            "            # Annoncer une absence sans dire qu'elle se repare "
+            "reviendrait a\n")],
+        "tests": ["test_libelle_des_modeles"],
+        "rouges": ["une absence reparable annonce la fabrication",
+                   "et nomme le script, sans le laisser chercher",
+                   "et le libelle reprend ce chemin resolu"],
+    },
+    {
+        "nom": "le chemin du convertisseur n'est plus resolu",
+        "pourquoi": "le greffon s'installe seul, sans le reste du depot : un "
+                    "chemin relatif annonce tel quel designe un dossier que "
+                    "l'utilisateur n'a pas, et le recours devient introuvable",
+        "remplacements": [(
+            "    for racine in (base, os.path.dirname(base)):\n"
+            "        candidat = os.path.join(racine, *morceaux)\n"
+            "        if os.path.isfile(candidat):\n"
+            "            return candidat\n",
+            "")],
+        "tests": ["test_libelle_des_modeles"],
+        "rouges": ["le chemin annonce existe quand le script est joignable"],
+    },
+    {
+        "nom": "le convertisseur disparait de la table des modeles",
+        "pourquoi": "le libelle se derivant de la table, une entree amputee "
+                    "suffit a faire disparaitre le recours partout a la fois, "
+                    "sans qu'aucune ligne de message n'ait ete touchee",
+        "remplacements": [(
+            "        \"convertisseur\": CONVERTISSEUR_GFPGAN,\n", "")],
+        "tests": ["test_libelle_des_modeles"],
+        "rouges": ["le modele d'amelioration declare un convertisseur",
+                   "une absence reparable annonce la fabrication",
+                   "le message de dernier recours nomme lui aussi le script"],
+    },
+    {
         "nom": "la table de preseance du greffon est desactivee",
         "pourquoi": "le fichier de parametres partirait avec des intentions "
                     "contradictoires, et l'ordre d'application tiendrait du "
@@ -222,6 +273,115 @@ MUTATIONS_GREFFON = [
             "    return \"env_\" + pile + \".json\"")],
         "tests": ["test_emplacements_et_marqueur"],
         "rouges": ["le marqueur porte le nom du greffon"],
+    },
+    {
+        "nom": "la reparation d'un environnement existant est supprimee",
+        "pourquoi": "toute la logique de choix placee dans la seule fonction "
+                    "de creation ne s'execute jamais sur une installation deja "
+                    "en place : le greffon reinstallerait par-dessus le venv "
+                    "d'un voisin de la suite, plusieurs centaines de "
+                    "megaoctets, a chaque premier lancement",
+        "remplacements": [(
+            "    if not reinstaller and os.path.isfile(py):\n"
+            '        progression("Verification de l\'environnement IA...")\n',
+            "    if False and os.path.isfile(py):\n"
+            '        progression("Verification de l\'environnement IA...")\n')],
+        "tests": ["test_poste_deja_installe"],
+        "rouges": ["aucune commande pip n'est lancee"],
+    },
+    {
+        "nom": "la purge des journaux redevient alphabetique sur tout le dossier",
+        "pourquoi": "logs/ est partage par la suite et deux conventions de "
+                    "nommage y cohabitent ; en ASCII le tiret precede le "
+                    "chiffre, donc un tri alphabetique supprimerait toujours "
+                    "les archives du voisin avant les siennes",
+        "remplacements": [(
+            "        purger_journaux(racine)\n        return cible\n",
+            "        entrees = sorted(os.path.join(racine, d)\n"
+            "                         for d in os.listdir(racine)\n"
+            "                         if os.path.isdir(os.path.join(racine, d)))\n"
+            "        for vieux in entrees[:-ARCHIVES_A_CONSERVER]:\n"
+            "            shutil.rmtree(vieux, ignore_errors=True)\n"
+            "        return cible\n")],
+        "tests": ["test_journaux_et_messages"],
+        "rouges": ["les archives d'un greffon voisin sont intactes"],
+    },
+    {
+        "nom": "les archives orphelines ne sont plus jamais resorbees",
+        "pourquoi": "le stock laisse par les versions anterieures au marqueur "
+                    "resterait indefiniment, et un greffon qui cree des "
+                    "fichiers hors de son dossier temporaire doit savoir y "
+                    "faire le menage",
+        "remplacements": [(
+            "    condamnees += [chemin for date, _, chemin\n"
+            "                   in orphelines[:-ARCHIVES_A_CONSERVER] "
+            "if date < limite]\n", "")],
+        "tests": ["test_journaux_et_messages"],
+        "rouges": ["les archives orphelines anciennes se resorbent"],
+    },
+    {
+        "nom": "le verdict d'acceleration n'est plus memorise",
+        "pourquoi": "les roues cuDNN seraient retentees et l'inference de "
+                    "controle rejouee a chaque ouverture du filtre, pour "
+                    "aboutir au meme repli - c'est exactement ce que la "
+                    "section 17 du scenario interdit",
+        "remplacements": [(
+            "        connu = verdict_acceleration()\n"
+            '        if connu and connu.get("verdict") == "echec" and not reinstaller:\n',
+            "        connu = verdict_acceleration()\n"
+            "        if False:\n")],
+        "tests": ["test_verdict_acceleration_memorise"],
+        "rouges": ["aucune roue cuDNN n'est retentee",
+                   "l'inference de controle n'est pas rejouee"],
+    },
+    {
+        "nom": "le message d'acceleration ne joint plus l'etat des deux couches",
+        "pourquoi": "\"le moteur est retombe sur CPUExecutionProvider\" est un "
+                    "symptome, pas un diagnostic : l'utilisateur ne peut rien "
+                    "en faire",
+        "remplacements": [(
+            '    lignes.append("  Fournisseurs declares par le moteur : %s"\n'
+            '                  % (", ".join(disponibles) or "aucun constate"))\n'
+            '    lignes.append("  Runtime du systeme : %s" % detail_runtime)\n',
+            "")],
+        "tests": ["test_verdict_acceleration_memorise"],
+        "rouges": ["le message joint l'etat des deux couches"],
+    },
+    {
+        "nom": "le script de validation ne croise plus les fournisseurs",
+        "pourquoi": "un seul nom inconnu de la build - ROCMExecutionProvider "
+                    "sous Windows - fait rejeter la liste ENTIERE par "
+                    "onnxruntime, qui se rabat sur le processeur. "
+                    "L'acceleration etait declaree impossible sur un poste ou "
+                    "elle fonctionnait, et le message accusait cuDNN",
+        "remplacements": [(
+            '        demandes = [p for p in cfg["fournisseurs"] if p in disponibles]\n',
+            '        demandes = list(cfg["fournisseurs"])\n')],
+        "tests": [],
+        "controle_livraison": True,
+    },
+    {
+        "nom": "la cause annoncee redevient une affirmation",
+        "pourquoi": "accuser cuDNN de confiance envoie l'utilisateur reparer "
+                    "ce qui n'est pas casse, et masque un defaut du greffon",
+        "remplacements": [(
+            "    for motifs, phrase in INDICES_CAUSE:\n"
+            "        if any(motif in texte for motif in motifs):\n"
+            "            return phrase\n", "")],
+        "tests": ["test_cause_probable"],
+        "rouges": ["une liste rejetee en bloc est nommee comme telle",
+                   "un vrai probleme de cuDNN, lui, est nomme"],
+    },
+    {
+        "nom": "le verdict d'acceleration ne se perime plus avec la version",
+        "pourquoi": "un poste dont l'acceleration marche resterait sur le "
+                    "processeur indefiniment, sur la foi d'un constat rendu "
+                    "par une version dont la validation etait fausse",
+        "remplacements": [(
+            '    if verdict.get("version_greffon") != PLUGIN_VERSION:\n',
+            "    if False:\n")],
+        "tests": ["test_verdict_perime_par_une_nouvelle_version"],
+        "rouges": ["un verdict d'une version anterieure est ignore"],
     },
     {
         "nom": "les donnees volumineuses retournent sous le profil GIMP",
@@ -402,6 +562,47 @@ MUTATIONS_INTEGRATION = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# Mutations verifiees sur le VRAI modele de detection. Ce sont les seules qui
+# portent sur un chemin qu'aucune doublure ne couvre : ce que YuNet rend
+# vraiment, et ce que le greffon en fait.
+# ---------------------------------------------------------------------------
+MUTATIONS_YUNET = [
+    {
+        "nom": "la remise a l'echelle des boites de YuNet est oubliee",
+        "pourquoi": "l'image est reduite avant detection : sans conversion "
+                    "inverse, toute grande photo verrait le traitement "
+                    "atterrir dans son coin superieur gauche, sans la moindre "
+                    "erreur",
+        "remplacements": [(
+            "        bx = max(0.0, float(ligne[0]) / echelle)\n"
+            "        by = max(0.0, float(ligne[1]) / echelle)\n"
+            "        bl = min(float(ligne[2]) / echelle, largeur - bx)\n"
+            "        bh = min(float(ligne[3]) / echelle, hauteur - by)\n",
+            "        bx = max(0.0, float(ligne[0]))\n"
+            "        by = max(0.0, float(ligne[1]))\n"
+            "        bl = min(float(ligne[2]), largeur - bx)\n"
+            "        bh = min(float(ligne[3]), hauteur - by)\n")],
+        "tests": ["test_grande_image"],
+        "rouges": ["cas 1 : la zone traitee contient le visage, dans les "
+                   "coordonnees de l'image d'origine",
+                   "cas 1 : la boite n'est pas restee dans l'espace reduit"],
+    },
+    {
+        "nom": "l'image n'est plus reduite avant detection",
+        "pourquoi": "une photo de douze megapixels passerait entiere dans "
+                    "YuNet ; le controle du facteur d'echelle est la pour que "
+                    "la reduction reste constatee et non supposee",
+        "remplacements": [(
+            "    echelle = min(1.0, float(cote_max) / float(max(hauteur, largeur)))\n",
+            "    echelle = 1.0\n")],
+        "tests": ["test_grande_image"],
+        "rouges": ["cas 1 : la reduction a bien eu lieu"],
+    },
+]
+
+
+
 # Les deux tables de preseance se rattrapent l'une l'autre. Les desactiver
 # separement donne deux tests verts - deux fausses preuves - parce que chaque
 # mecanisme couvre seul le cas signale. Ce n'est qu'en les retirant tous les
@@ -522,6 +723,23 @@ def mutations_du_worker():
                   " | ".join(problemes))
 
 
+def controle_livraison_rouge(chemin_greffon):
+    """Le controle de livraison, execute sur une copie mutee du greffon.
+
+    Certaines regressions ne se voient pas a l'execution : celle qui nous
+    occupe ne se manifestait que sur un poste equipe d'une carte graphique.
+    C'est alors le controle de livraison qui doit l'arreter, et c'est lui
+    qu'il faut prouver capable d'echouer.
+    """
+    verif = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                         "verifier_livraison.py")
+    code = "import sys; sys.argv=[%r]; " % verif
+    proc = subprocess.run(
+        [sys.executable, verif], capture_output=True, text=True,
+        env=dict(os.environ, IA_VISAGE_GREFFON=chemin_greffon))
+    return proc.returncode != 0, proc.stdout
+
+
 def mutations_du_greffon():
     print("Mutations du greffon")
     original = open(CHEMIN_GREFFON, encoding="utf-8").read()
@@ -530,6 +748,18 @@ def mutations_du_greffon():
             mute = appliquer(original, mutation["remplacements"], mutation["nom"])
         except AssertionError as e:
             controler("mutation applicable : " + mutation["nom"], False, str(e))
+            continue
+        if mutation.get("controle_livraison"):
+            dossier = tempfile.mkdtemp(prefix="mutation_livraison_")
+            chemin = os.path.join(dossier, "ia_visage_studio.py")
+            with open(chemin, "w", encoding="utf-8", newline="\n") as f:
+                f.write(mute)
+            try:
+                rouge, sortie = controle_livraison_rouge(chemin)
+            finally:
+                shutil.rmtree(dossier, ignore_errors=True)
+            controler("mutation detectee : " + mutation["nom"], rouge,
+                      "le controle de livraison reste vert")
             continue
         dossier = tempfile.mkdtemp(prefix="mutation_greffon_")
         chemin = os.path.join(dossier, "ia_visage_studio.py")
@@ -568,6 +798,50 @@ def mutations_d_integration():
         problemes = verifier_attentes(mutation, resultats, incident)
         controler("mutation detectee : " + mutation["nom"], not problemes,
                   " | ".join(problemes))
+
+
+def mutations_yunet():
+    print("Mutations verifiees sur le vrai modele de detection")
+    dossier_modele = tempfile.mkdtemp(prefix="mutation_yunet_")
+    try:
+        modele, origine = tests_yunet.obtenir_modele(dossier_modele)
+        if not modele:
+            controler("modele YuNet disponible pour la preuve par mutation",
+                      True)
+            print("  NOTE  modele indisponible (%s) : ces mutations sont "
+                  "ignorees." % str(origine)[:120])
+            return
+        # Le modele est deja la : les tests ne le retelechargeront pas.
+        os.environ["IA_VISAGE_YUNET"] = modele
+        original = open(CHEMIN_GREFFON, encoding="utf-8").read()
+        for mutation in MUTATIONS_YUNET:
+            try:
+                mute = appliquer(original, mutation["remplacements"],
+                                 mutation["nom"])
+            except AssertionError as e:
+                controler("mutation applicable : " + mutation["nom"], False,
+                          str(e))
+                continue
+            dossier = tempfile.mkdtemp(prefix="mutation_yunet_greffon_")
+            chemin = os.path.join(dossier, "ia_visage_studio.py")
+            with open(chemin, "w", encoding="utf-8", newline="\n") as f:
+                f.write(mute)
+            tests_yunet.FICHIER_GREFFON = chemin
+            tests_worker.FICHIER_GREFFON = chemin
+            tests_yunet._TABLE = None
+            try:
+                resultats, incident = executer(tests_yunet, mutation["tests"])
+            finally:
+                tests_yunet.FICHIER_GREFFON = CHEMIN_GREFFON
+                tests_worker.FICHIER_GREFFON = CHEMIN_GREFFON
+                tests_yunet._TABLE = None
+                shutil.rmtree(dossier, ignore_errors=True)
+            problemes = verifier_attentes(mutation, resultats, incident)
+            controler("mutation detectee : " + mutation["nom"], not problemes,
+                      " | ".join(problemes))
+    finally:
+        os.environ.pop("IA_VISAGE_YUNET", None)
+        shutil.rmtree(dossier_modele, ignore_errors=True)
 
 
 def mutation_conjointe():
@@ -619,6 +893,8 @@ def main():
     mutations_du_greffon()
     print("")
     mutations_d_integration()
+    print("")
+    mutations_yunet()
     print("")
     mutation_conjointe()
     print("")

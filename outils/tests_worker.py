@@ -389,6 +389,7 @@ class Bac:
             "pivot_type": extraire_constante("PIVOT_TYPE"),
             "pause_entre_modeles_s": 0.0,
             "taille_entree_detection": extraire_constante("TAILLE_ENTREE_DETECTION"),
+            "yunet_cote_max": extraire_constante("YUNET_COTE_MAX"),
             "detection_normalisation": [0.0, 1.0],
             "detection_nombre_classes": 1,
             "score_min_visage": extraire_constante("SCORE_MIN_VISAGE"),
