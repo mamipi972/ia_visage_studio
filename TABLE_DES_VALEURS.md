@@ -26,10 +26,10 @@ Ce qui **a** été vérifié depuis ce dépôt, et comment :
 
 | Affirmation | Vérifiée par | Date | Version |
 | --- | --- | --- | --- |
-| Le greffon se charge et s'exerce hors de GIMP | `outils/tests_unitaires.py`, 97 contrôles | 2026-09-16 | 1.0 |
+| Le greffon se charge et s'exerce hors de GIMP | `outils/tests_unitaires.py`, 109 contrôles | 2026-09-16 | 1.0 |
 | Le worker produit les bons artefacts contre une doublure d'`onnxruntime` | `outils/tests_worker.py`, 54 contrôles | 2026-09-16 | 1.0 |
 | `run_procedure` aboutit de bout en bout et produit un calque nommé | `outils/tests_integration.py`, 30 contrôles | 2026-09-16 | 1.0 |
-| Chaque correctif fait échouer son test quand on le remet en défaut | `outils/tests_mutation.py`, 33 mutations | 2026-09-16 | 1.0 |
+| Chaque correctif fait échouer son test quand on le remet en défaut | `outils/tests_mutation.py`, 35 mutations | 2026-09-16 | 1.0 |
 | Le plafond mémoire refuse bien une allocation trop grande | `tests_worker.py`, cas 11, POSIX uniquement | 2026-09-16 | 1.0 |
 | Les cascades de Haar disparaissent à partir d'OpenCV 5 | constat sur `opencv-python-headless` 5.0.0 et 4.14.0 | 2026-09-16 | 1.0 |
 | Le modèle YuNet se télécharge depuis l'adresse déclarée, pèse 232 589 octets, se charge dans OpenCV 4.14 et détecte un visage | `outils/tests_yunet.py`, 14 contrôles sur le **vrai** modèle | 2026-09-17 | 1.0 |

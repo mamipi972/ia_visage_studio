@@ -1437,7 +1437,8 @@ def main():
     with open(sys.argv[1], "r", encoding="utf-8", errors="replace") as f:
         cfg = json.load(f)
     sortie = cfg.get("sortie")
-    resultat = {"ok": False, "fournisseur": "", "detail": ""}
+    resultat = {"ok": False, "fournisseur": "", "detail": "",
+                "disponibles": [], "version": ""}
     try:
         import numpy as np
         import onnxruntime as ort
@@ -1465,6 +1466,12 @@ def main():
         resultat["ok"] = True
     except Exception as e:
         resultat["detail"] = str(e)[:600]
+    try:
+        import onnxruntime as ort
+        resultat["disponibles"] = list(ort.get_available_providers())
+        resultat["version"] = str(getattr(ort, "__version__", ""))
+    except Exception:
+        pass
     try:
         with open(sortie, "w", encoding="utf-8") as f:
             json.dump(resultat, f, indent=2)
@@ -1504,14 +1511,44 @@ def valider_acceleration(python_venv, env, modele, taille_entree, dossier_travai
             donnees = json.load(f)
     except Exception:
         donnees = {}
+
+    constat = {"ok": False, "fournisseur": donnees.get("fournisseur", ""),
+               "detail": "", "disponibles": donnees.get("disponibles") or [],
+               "version": donnees.get("version", ""),
+               "journal": lignes_diagnostic_moteur(lire_journal(log))}
     if depasse:
-        return False, "", "l'inference de validation a depasse %d s" % DELAI_VALIDATION_GPU_S
+        constat["detail"] = ("l'inference de validation a depasse %d s"
+                             % DELAI_VALIDATION_GPU_S)
+        return constat
     if annule:
-        return False, "", "validation interrompue"
+        constat["detail"] = "validation interrompue"
+        return constat
     if code != 0 or not donnees.get("ok"):
-        detail = donnees.get("detail") or lire_journal(log).strip()[-300:]
-        return False, "", detail or "l'inference de validation a echoue (code %s)" % code
-    return True, donnees.get("fournisseur", ""), ""
+        constat["detail"] = (donnees.get("detail")
+                             or lire_journal(log).strip()[-300:]
+                             or "l'inference de validation a echoue (code %s)" % code)
+        return constat
+    constat["ok"] = True
+    return constat
+
+
+def lignes_diagnostic_moteur(journal_texte):
+    """Ce que le moteur a dit lui-meme de son chargement de fournisseur.
+
+    onnxruntime ecrit sur la sortie d'erreur la raison exacte pour laquelle il
+    n'a pas pu charger un fournisseur - bibliotheque absente, version de cuDNN
+    inattendue. C'est la seule source qui nomme la cause ; le greffon, lui, ne
+    voit que le symptome.
+    """
+    interessantes = []
+    for ligne in (journal_texte or "").splitlines():
+        bas = ligne.lower()
+        if any(mot in bas for mot in ("cuda", "cudnn", "provider", "libonnxruntime",
+                                      "tensorrt", "rocm", "directml")):
+            ligne = ligne.strip()
+            if ligne and ligne not in interessantes:
+                interessantes.append(ligne[:220])
+    return interessantes[-4:]
 
 
 def installer_cudnn(python_venv, env, dossier_travail, progression):
@@ -1681,6 +1718,106 @@ def preparer_environnement(pile, dossier_travail, reinstaller, progression):
     except Exception:
         pass
     return py
+
+
+def verdict_acceleration():
+    """Verdict d'acceleration deja constate pour cette pile, ou None.
+
+    La section 17 du scenario est explicite : un echec d'environnement se
+    memorise, faute de quoi le greffon relance a chaque ouverture du filtre un
+    travail dont il connait deja l'issue. C'etait le cas ici - les roues cuDNN
+    etaient retentees et l'inference de controle rejouee a chaque lancement,
+    pour reconstater le meme repli.
+
+    Le verdict est lie a la signature des paquets : si la pile change, il
+    cesse de valoir.
+    """
+    verdict = lire_marqueur().get("acceleration")
+    if not isinstance(verdict, dict):
+        return None
+    if verdict.get("signature") != signature_paquets(STACK_GPU):
+        return None
+    return verdict
+
+
+def memoriser_verdict_acceleration(ok, constat):
+    marqueur = lire_marqueur()
+    marqueur["acceleration"] = {
+        "verdict": "ok" if ok else "echec",
+        "signature": signature_paquets(STACK_GPU),
+        "fournisseur": constat.get("fournisseur", ""),
+        "detail": str(constat.get("detail", ""))[:300],
+        "disponibles": constat.get("disponibles") or [],
+        "version_moteur": constat.get("version", ""),
+        "journal": constat.get("journal") or [],
+        "constate_le": time.strftime("%Y-%m-%dT%H:%M:%S"),
+    }
+    ecrire_marqueur(marqueur)
+    journal("verdict d'acceleration memorise: %s (%s)"
+            % (marqueur["acceleration"]["verdict"],
+               marqueur["acceleration"]["fournisseur"] or "aucun"))
+
+
+def taille_dossier(chemin, plafond_fichiers=200000):
+    """Taille d'un dossier, bornee en nombre de fichiers parcourus."""
+    total = 0
+    vus = 0
+    for racine, _, fichiers in os.walk(chemin):
+        for nom in fichiers:
+            vus += 1
+            if vus > plafond_fichiers:
+                return total
+            try:
+                total += os.path.getsize(os.path.join(racine, nom))
+            except OSError:
+                pass
+    return total
+
+
+def message_acceleration_ecartee(constat, memorise=False):
+    """Le symptome, l'etat des deux couches, la cause probable, et la suite.
+
+    "le moteur est retombe sur CPUExecutionProvider" est un constat, pas un
+    diagnostic : l'utilisateur ne peut rien en faire. Le message doit joindre
+    ce que declare le moteur et ce que voit le systeme - les deux couches de
+    la section 18 - puis dire ce qui se passe maintenant.
+    """
+    present, detail_runtime = sonde_runtime_cuda()
+    disponibles = constat.get("disponibles") or []
+    lignes = ["Acceleration materielle ecartee apres une inference de controle."]
+    if memorise:
+        lignes[0] = ("Acceleration materielle ecartee : constat deja etabli "
+                     "lors d'un lancement precedent.")
+    lignes.append("  Constat : le calcul s'est fait sur %s."
+                  % (constat.get("fournisseur") or "le processeur"))
+    lignes.append("  Fournisseurs declares par le moteur : %s"
+                  % (", ".join(disponibles) or "aucun constate"))
+    lignes.append("  Runtime du systeme : %s" % detail_runtime)
+    for ligne in (constat.get("journal") or []):
+        lignes.append("  Moteur : " + ligne)
+    if constat.get("detail"):
+        lignes.append("  Detail : " + premiere_phrase(str(constat["detail"])))
+    if "CUDAExecutionProvider" in disponibles:
+        lignes.append("Cause la plus frequente dans ce cas : cuDNN absent, ou "
+                      "d'une version majeure differente de celle qu'attend "
+                      "cette version d'onnxruntime-gpu. Le fournisseur est "
+                      "annonce disponible, mais il ne se charge pas.")
+    else:
+        lignes.append("Le fournisseur GPU n'est meme pas annonce par le "
+                      "moteur : la roue installee est une roue processeur, ou "
+                      "sa bibliotheque n'a pas pu etre chargee.")
+    lignes.append("Le traitement se poursuit sur le processeur : meme "
+                  "resultat, seulement plus lent.")
+    dossier = os.path.join(get_data_dir(), nom_venv(STACK_GPU))
+    if os.path.isdir(dossier):
+        lignes.append("L'environnement GPU installe occupe %s ici :"
+                      % octets_lisibles(taille_dossier(dossier)))
+        lignes.append("  " + dossier)
+    lignes.append("Ce constat est memorise : les lancements suivants passeront "
+                  "directement au processeur, sans rien reinstaller ni "
+                  "reessayer. Pour refaire l'essai, cochez \"Reinstaller "
+                  "l'environnement IA\".")
+    return "\n".join(lignes)
 
 
 def refus_gpu(detail):
@@ -4430,6 +4567,18 @@ class IaVisageStudioPlugin(Gimp.PlugIn):
         l'autre n'a pas servi. Un message d'erreur a la place d'un calque
         serait un echec de conception.
         """
+        # Un echec deja constate ne se reconstate pas. Sans cette memoire, les
+        # roues cuDNN etaient retentees et l'inference de controle rejouee a
+        # chaque ouverture du filtre, pour aboutir au meme repli.
+        connu = verdict_acceleration()
+        if connu and connu.get("verdict") == "echec" and not reinstaller:
+            journal("acceleration deja ecartee le %s, essai non rejoue"
+                    % connu.get("constate_le"))
+            avertissements.append(message_acceleration_ecartee(connu, True))
+            return (False, preparer_environnement(STACK_CPU, dossier_travail,
+                                                  False, progression),
+                    clean_env(), FOURNISSEURS_CPU)
+
         installer_cudnn(python_venv, clean_env(), dossier_travail, progression)
         env_gpu = clean_env(dossiers_dll_paquets(python_venv))
 
@@ -4443,6 +4592,8 @@ class IaVisageStudioPlugin(Gimp.PlugIn):
                 break
 
         if modele is None:
+            # Rien a memoriser : ce n'est pas un verdict sur le materiel, mais
+            # l'absence du sujet de l'experience.
             avertissements.append(
                 "Acceleration materielle non validee : aucun modele n'etait "
                 "disponible pour l'inference de controle. Le traitement se "
@@ -4451,20 +4602,23 @@ class IaVisageStudioPlugin(Gimp.PlugIn):
                                                   False, progression),
                     clean_env(), FOURNISSEURS_CPU)
 
-        ok, fournisseur, detail = valider_acceleration(
-            python_venv, env_gpu, modele, taille, dossier_travail,
-            FOURNISSEURS_GPU, progression)
-        if ok and fournisseur and fournisseur != "CPUExecutionProvider":
+        constat = valider_acceleration(python_venv, env_gpu, modele, taille,
+                                       dossier_travail, FOURNISSEURS_GPU,
+                                       progression)
+        fournisseur = constat.get("fournisseur") or ""
+        reussi = bool(constat.get("ok")) and fournisseur \
+            and fournisseur != "CPUExecutionProvider"
+        # Le verdict s'ecrit tant que la pile GPU est la pile active : le
+        # marqueur en depend.
+        memoriser_verdict_acceleration(reussi, constat)
+        if reussi:
             journal("acceleration validee par inference reelle: " + fournisseur)
             return True, python_venv, env_gpu, FOURNISSEURS_GPU
 
-        motif = detail or ("le moteur est retombe sur %s"
-                           % (fournisseur or "le processeur"))
-        avertissements.append(
-            "Acceleration materielle ecartee apres une inference de controle : "
-            "%s.\nLe traitement se poursuit sur le processeur : meme resultat, "
-            "seulement plus lent." % premiere_phrase(motif))
-        journal("acceleration ecartee: " + str(motif)[:200])
+        avertissements.append(message_acceleration_ecartee(constat))
+        journal("acceleration ecartee: %s | %s"
+                % (fournisseur or "aucun fournisseur",
+                   str(constat.get("detail"))[:150]))
         return (False, preparer_environnement(STACK_CPU, dossier_travail, False,
                                               progression),
                 clean_env(), FOURNISSEURS_CPU)

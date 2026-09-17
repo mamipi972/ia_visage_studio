@@ -551,6 +551,92 @@ def test_ecart_materiel_signale_une_fois():
         bac.fermer()
 
 
+def test_verdict_acceleration_memorise():
+    """Un echec d'acceleration deja constate ne se reconstate pas.
+
+    C'est la section 17 du scenario : memoriser l'echec dans le marqueur pour
+    ne pas relancer, a chaque ouverture du filtre, un travail dont on connait
+    l'issue. Sans cela, les roues cuDNN etaient retentees et l'inference de
+    controle rejouee a chaque lancement, pour aboutir au meme repli.
+    """
+    print("Materiel : un echec d'acceleration constate une fois ne se rejoue pas")
+    bac = Bac()
+    try:
+        module = bac.module
+        module.definir_pile(module.STACK_GPU)
+        controler("aucun verdict au depart",
+                  module.verdict_acceleration() is None)
+
+        constat = {"ok": True, "fournisseur": "CPUExecutionProvider",
+                   "detail": "", "disponibles": ["CPUExecutionProvider"],
+                   "version": "1.17.0",
+                   "journal": ["Failed to load library libonnxruntime_providers_cuda.so"]}
+        module.memoriser_verdict_acceleration(False, constat)
+        verdict = module.verdict_acceleration()
+        controler("le verdict est memorise avec son constat",
+                  verdict and verdict.get("verdict") == "echec"
+                  and verdict.get("disponibles") == ["CPUExecutionProvider"],
+                  str(verdict))
+
+        # Un second lancement ne doit ni installer cuDNN ni rejouer l'inference.
+        appels = []
+        module.installer_cudnn = lambda *a, **k: appels.append("cudnn") or (False, "")
+        module.valider_acceleration = lambda *a, **k: appels.append("validation") or {}
+        module.preparer_environnement = lambda *a, **k: appels.append("env") or sys.executable
+        greffon = module.IaVisageStudioPlugin()
+        avertissements = []
+        module.definir_pile(module.STACK_GPU)
+        # Un modele doit etre fourni, sinon le code s'arrete avant l'inference
+        # de controle pour une tout autre raison, et le controle ci-dessous ne
+        # prouverait rien.
+        modeles = {module.ROLE_DETECTION_YUNET:
+                   os.path.join(bac.dossier, "factice.onnx")}
+        utiliser, python, env, fournisseurs = greffon._valider_ou_degrader(
+            sys.executable, modeles, bac.dossier, lambda t: None,
+            avertissements, False)
+        controler("aucune roue cuDNN n'est retentee", "cudnn" not in appels,
+                  str(appels))
+        controler("l'inference de controle n'est pas rejouee",
+                  "validation" not in appels, str(appels))
+        controler("le traitement bascule sur le processeur",
+                  utiliser is False and fournisseurs == module.FOURNISSEURS_CPU,
+                  str((utiliser, fournisseurs)))
+        message = "\n".join(avertissements)
+        controler("le message dit que le constat est memorise",
+                  "memorise" in message or "constat deja etabli" in message,
+                  message[:200])
+        controler("le message joint l'etat des deux couches",
+                  "Fournisseurs declares par le moteur" in message
+                  and "Runtime du systeme" in message, message[:300])
+        controler("le message cite ce que le moteur a dit lui-meme",
+                  "libonnxruntime_providers_cuda" in message, message[:400])
+        controler("le message dit comment refaire l'essai",
+                  "Reinstaller l'environnement IA" in message, message[:600])
+    finally:
+        bac.fermer()
+
+
+def test_diagnostic_du_moteur():
+    print("Materiel : extraction du diagnostic ecrit par le moteur")
+    bac = Bac()
+    try:
+        module = bac.module
+        brut = ("2026-09-17 10:00:00 [I] Creating session\n"
+                "[E:onnxruntime] Failed to load library "
+                "libonnxruntime_providers_cuda.so: libcudnn.so.8: cannot open "
+                "shared object file\n"
+                "une ligne sans rapport\n"
+                "[W] Falling back to CPUExecutionProvider\n")
+        lignes = module.lignes_diagnostic_moteur(brut)
+        controler("les lignes qui nomment la cause sont retenues",
+                  any("libcudnn" in l for l in lignes), str(lignes))
+        controler("les lignes sans rapport sont ecartees",
+                  not any("sans rapport" in l for l in lignes), str(lignes))
+        controler("la queue est bornee", len(lignes) <= 4, str(len(lignes)))
+    finally:
+        bac.fermer()
+
+
 def test_annulation_et_processus_orphelins():
     print("Processus : annulation, et aucun enfant ne survit au parent")
     bac = Bac()
@@ -954,6 +1040,8 @@ def main():
     test_tofu()
     test_refus_gpu_avant_telechargement()
     test_ecart_materiel_signale_une_fois()
+    test_verdict_acceleration_memorise()
+    test_diagnostic_du_moteur()
     test_annulation_et_processus_orphelins()
     test_isolation_environnement()
     test_espace_disque()

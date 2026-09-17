@@ -270,6 +270,34 @@ MUTATIONS_GREFFON = [
         "rouges": ["les archives orphelines anciennes se resorbent"],
     },
     {
+        "nom": "le verdict d'acceleration n'est plus memorise",
+        "pourquoi": "les roues cuDNN seraient retentees et l'inference de "
+                    "controle rejouee a chaque ouverture du filtre, pour "
+                    "aboutir au meme repli - c'est exactement ce que la "
+                    "section 17 du scenario interdit",
+        "remplacements": [(
+            "        connu = verdict_acceleration()\n"
+            '        if connu and connu.get("verdict") == "echec" and not reinstaller:\n',
+            "        connu = verdict_acceleration()\n"
+            "        if False:\n")],
+        "tests": ["test_verdict_acceleration_memorise"],
+        "rouges": ["aucune roue cuDNN n'est retentee",
+                   "l'inference de controle n'est pas rejouee"],
+    },
+    {
+        "nom": "le message d'acceleration ne joint plus l'etat des deux couches",
+        "pourquoi": "\"le moteur est retombe sur CPUExecutionProvider\" est un "
+                    "symptome, pas un diagnostic : l'utilisateur ne peut rien "
+                    "en faire",
+        "remplacements": [(
+            '    lignes.append("  Fournisseurs declares par le moteur : %s"\n'
+            '                  % (", ".join(disponibles) or "aucun constate"))\n'
+            '    lignes.append("  Runtime du systeme : %s" % detail_runtime)\n',
+            "")],
+        "tests": ["test_verdict_acceleration_memorise"],
+        "rouges": ["le message joint l'etat des deux couches"],
+    },
+    {
         "nom": "les donnees volumineuses retournent sous le profil GIMP",
         "pourquoi": "sur un profil itinerant, plusieurs gigaoctets seraient "
                     "synchronises a chaque ouverture de session",

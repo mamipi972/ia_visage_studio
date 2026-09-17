@@ -365,6 +365,20 @@ traitement **se poursuit sur le processeur** et une phrase dit pourquoi. Un
 message d'erreur à la place d'un calque serait un échec de conception : vous
 vouliez traiter une image, pas arbitrer une question de pilotes.
 
+**Un échec constaté n'est constaté qu'une fois.** Le verdict est écrit dans le
+marqueur d'environnement : les lancements suivants passent directement au
+processeur, sans retenter les roues cuDNN ni rejouer l'inférence de contrôle.
+Sans cette mémoire, chaque ouverture du filtre rejouait un travail dont l'issue
+était connue. Pour refaire l'essai — après avoir installé cuDNN, par exemple —
+cochez **Réinstaller l'environnement IA**.
+
+Le message d'échec ne se contente pas du symptôme. « Le moteur est retombé sur
+`CPUExecutionProvider` » ne vous apprend rien d'actionnable ; le greffon joint
+donc les fournisseurs que le moteur déclare, l'état du runtime CUDA du système,
+**ce que le moteur a écrit lui-même** sur son chargement de fournisseur, la
+cause la plus probable, et l'emplacement et la taille de l'environnement GPU
+installé.
+
 Enfin, si le calcul s'est fait sur le processeur alors que la carte graphique
 était demandée, le greffon le dit **une fois**, en joignant l'état des deux
 couches — runtime du système et fournisseurs du moteur. Le message se déclenche
@@ -493,7 +507,7 @@ contrôle qu'on corrige, avant de livrer.
 ### Pourquoi une preuve par mutation
 
 Un test qui passe ne prouve rien tant qu'on n'a pas vérifié qu'il sait échouer.
-`tests_mutation.py` remet trente-trois comportements fautifs dans une copie du
+`tests_mutation.py` remet trente-cinq comportements fautifs dans une copie du
 code et vérifie que le contrôle correspondant passe au rouge — oubli du
 décalage de mise en lettre-boîte, pivot laissé en BGR, normalisation ignorée,
 16 bits traité comme du 8 bits, table de préséance désactivée, plafond mémoire
