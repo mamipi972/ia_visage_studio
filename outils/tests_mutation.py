@@ -245,16 +245,28 @@ MUTATIONS_GREFFON = [
                     "chiffre, donc un tri alphabetique supprimerait toujours "
                     "les archives du voisin avant les siennes",
         "remplacements": [(
-            "        for vieux in archives_du_greffon(racine)"
-            "[:-ARCHIVES_A_CONSERVER]:\n"
-            "            shutil.rmtree(vieux, ignore_errors=True)\n",
+            "        purger_journaux(racine)\n        return cible\n",
             "        entrees = sorted(os.path.join(racine, d)\n"
             "                         for d in os.listdir(racine)\n"
             "                         if os.path.isdir(os.path.join(racine, d)))\n"
             "        for vieux in entrees[:-ARCHIVES_A_CONSERVER]:\n"
-            "            shutil.rmtree(vieux, ignore_errors=True)\n")],
+            "            shutil.rmtree(vieux, ignore_errors=True)\n"
+            "        return cible\n")],
         "tests": ["test_journaux_et_messages"],
         "rouges": ["les archives d'un greffon voisin sont intactes"],
+    },
+    {
+        "nom": "les archives orphelines ne sont plus jamais resorbees",
+        "pourquoi": "le stock laisse par les versions anterieures au marqueur "
+                    "resterait indefiniment, et un greffon qui cree des "
+                    "fichiers hors de son dossier temporaire doit savoir y "
+                    "faire le menage",
+        "remplacements": [(
+            "    condamnees += [chemin for date, _, chemin\n"
+            "                   in orphelines[:-ARCHIVES_A_CONSERVER] "
+            "if date < limite]\n", "")],
+        "tests": ["test_journaux_et_messages"],
+        "rouges": ["les archives orphelines anciennes se resorbent"],
     },
     {
         "nom": "les donnees volumineuses retournent sous le profil GIMP",

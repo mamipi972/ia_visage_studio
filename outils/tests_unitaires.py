@@ -713,8 +713,41 @@ def test_journaux_et_messages():
         controler("les archives d'un greffon voisin sont intactes",
                   all(os.path.isdir(d) for d in voisines),
                   str([d for d in voisines if not os.path.isdir(d)]))
-        controler("une archive non identifiee n'est jamais supprimee",
+        controler("une archive recente non identifiee est conservee",
                   os.path.isdir(sans_marque), sans_marque)
+
+        # Le stock orphelin - archives d'avant le marqueur, ou d'un greffon de
+        # la suite qui ne le pose pas encore - se resorbe, mais seulement au
+        # dela de deux conditions reunies : l'age et le nombre.
+        jour = 86400
+        anciennes = []
+        for index in range(module.ARCHIVES_A_CONSERVER + 3):
+            d = os.path.join(module.get_logs_dir(), "2025-01-%02d_00-00-00"
+                             % (index + 1))
+            os.makedirs(d, exist_ok=True)
+            with open(os.path.join(d, "worker.log"), "w") as f:
+                f.write("x")
+            quand = time.time() - 40 * jour
+            os.utime(os.path.join(d, "worker.log"), (quand, quand))
+            os.utime(d, (quand, quand))
+            anciennes.append(d)
+        module.purger_journaux(module.get_logs_dir())
+        # sans_marque compte lui aussi parmi les orphelines, et il est le plus
+        # recent : le decompte porte donc sur l'ensemble, pas sur les seules
+        # anciennes.
+        orphelines = [d for d in os.listdir(module.get_logs_dir())
+                      if os.path.isdir(os.path.join(module.get_logs_dir(), d))
+                      and not os.path.isfile(os.path.join(
+                          module.get_logs_dir(), d, "incident.json"))]
+        supprimees = [d for d in anciennes if not os.path.isdir(d)]
+        controler("les archives orphelines anciennes se resorbent",
+                  len(orphelines) == module.ARCHIVES_A_CONSERVER
+                  and len(supprimees) == 4,
+                  "%d orphelines restantes, %d anciennes supprimees"
+                  % (len(orphelines), len(supprimees)))
+        controler("celle d'un voisin, recente, n'a toujours pas bouge",
+                  all(os.path.isdir(d) for d in voisines)
+                  and os.path.isdir(sans_marque), str(voisines))
 
         texte = ("RAISON: le modele est absent.\n"
                  "Detail : 400 lignes de sortie pip\nencore une ligne")

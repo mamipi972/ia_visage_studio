@@ -1,6 +1,7 @@
 # Audit de suite — les cinq greffons ensemble
 
-**Établi le 2026-09-16 par Claude, à la demande de l'auteur du dépôt.**
+**Établi le 2026-09-16, mis à jour le 2026-09-17, par Claude, à la demande de
+l'auteur du dépôt.**
 Portée : les cinq greffons de la suite IA pour GIMP 3.0, lus **dans les
 versions réellement installées sur le poste de l'utilisateur** et non dans
 celles des dépôts.
@@ -156,23 +157,58 @@ Personne ne s'en aperçoit : il n'y a pas d'incident quand un greffon
 fonctionne, et c'est précisément le jour où l'on a besoin de ces journaux
 qu'on découvre leur absence.
 
-**Corrigé dans `ia_visage_studio` 1.0** : la fonction `archives_du_greffon()`
-ne retient que les archives portant un `incident.json` au nom de ce greffon, et
-les date par la date du fichier plutôt que par le nom du dossier — de sorte
-qu'aucune convention de nommage n'entre plus en jeu. Une archive qu'on ne sait
-pas identifier n'est jamais supprimée : la laisser vaut mieux qu'effacer celle
-d'un voisin.
+**Corrigé dans les cinq greffons** (2026-09-17). Le principe est le même
+partout :
 
-Deux contrôles permanents (`test_journaux_et_messages`) et une mutation
-(« la purge des journaux redevient alphabétique sur tout le dossier ») le
-vérifient.
+- chaque archive reçoit un `incident.json` qui nomme le greffon, sa version et
+  la plateforme, **écrit avant la copie des journaux** — si celle-ci échoue à
+  mi-chemin, l'archive reste identifiable, donc purgeable ;
+- la purge ne retient que les archives portant ce marqueur à son propre nom, et
+  les date par le fichier plutôt que par le nom du dossier : aucune convention
+  de nommage n'entre plus en jeu ;
+- une archive que personne ne revendique — antérieure au marqueur, ou produite
+  par un greffon qui ne l'a pas encore — n'est supprimée qu'à **deux conditions
+  réunies** : avoir plus de trente jours, et ne pas figurer parmi les dix plus
+  récentes d'entre elles. Le stock ancien se résorbe donc sans qu'une archive
+  récente soit jamais menacée, y compris pendant une installation partielle.
 
-**Reste à faire :** les quatre autres greffons purgent toujours à l'aveugle.
-Tant que l'un d'eux tourne, les archives des autres restent exposées. La
-correction est la même dans chacun : écrire un `incident.json` et ne purger que
-les siennes.
+| Greffon | Livré comment | Contrôlé par |
+| --- | --- | --- |
+| `ia_visage_studio` | dans ce dépôt | `outils/tests_unitaires.py` + 2 mutations |
+| `deep_erase` | fichier `.py` | `outils/suite/tests_purge_suite.py` |
+| `deep_erase_pro` | fichier `.py` | `outils/suite/tests_purge_suite.py` |
+| `gimp_sam2_segmentation` | fichier `.py` (sur la **6.3** installée) | `outils/suite/tests_purge_suite.py` |
+| `ia_detourage` | fichier `.py` | `outils/suite/tests_purge_suite.py` |
 
-### 4. Le fichier de confiance des modèles n'est pas mutualisé — *non corrigé*
+Les quatre correctifs hors dépôt ont été livrés sous forme de fichiers, à la
+demande de l'auteur : leurs dépôts sont en retard sur ce qui est installé — le
+`deep_erase.py` publié est antérieur à l'archivage des journaux lui-même — et
+les y corriger aurait produit des fichiers qu'il n'aurait pas voulu installer.
+
+**Reste à faire :** reporter ces correctifs dans les trois dépôts concernés, le
+jour où ils seront remis à niveau sur ce qui tourne réellement.
+
+### 4. Deux incidents dans la même seconde s'écrasaient — *corrigé*
+
+Trouvé en écrivant les contrôles du point 3, et non en relisant le code : le
+banc créait quatorze incidents d'affilée et n'en retrouvait **qu'un seul**.
+
+`deep_erase`, `deep_erase_pro` et `ia_detourage` nommaient leurs archives
+`%Y-%m-%d_%H-%M-%S`, à la seconde près. Deux incidents dans la même seconde
+visaient donc le même dossier, et `makedirs(exist_ok=True)` faisait que le
+second remplaçait les journaux du premier. C'est exactement le cas où ces
+journaux servent : une série d'échecs rapprochés.
+
+`gimp_sam2_segmentation` avait déjà corrigé ce point de son côté en ajoutant
+les microsecondes ; `ia_visage_studio` l'a repris. Les trois autres le font
+maintenant, avec la même convention à tirets qu'avant — la purge ne dépendant
+plus du nom, le format est libre.
+
+Sans cette correction, le contrôle du point 3 n'aurait rien prouvé : avec une
+seule archive sur le disque, aucune purge ne se déclenche, et la mutation
+restait verte. Les deux défauts se tenaient.
+
+### 5. Le fichier de confiance des modèles n'est pas mutualisé — *non corrigé*
 
 | Greffon | Fichier |
 | --- | --- |
@@ -195,11 +231,13 @@ changement d'empreinte serait signalé par un greffon et pas par l'autre.
 
 | Changement | Fichier |
 | --- | --- |
-| Purge des journaux limitée aux archives de ce greffon, datées par leur contenu | `ia_visage_studio.py`, `archives_du_greffon()` |
+| Purge des journaux limitée aux archives de ce greffon, datées par leur contenu | `ia_visage_studio.py`, `_inventaire_archives()`, `purger_journaux()` |
+| Résorption des archives orphelines, sous double condition d'âge et de nombre | `ia_visage_studio.py`, `purger_journaux()` |
 | `incident.json` écrit **avant** la copie, pour qu'une archive incomplète reste identifiable | `ia_visage_studio.py`, `archiver_journaux()` |
 | Contrôle permanent du démarrage sur un venv déjà installé par un voisin | `outils/tests_unitaires.py`, `test_poste_deja_installe` |
-| Contrôles permanents : archives d'un voisin intactes, archive non identifiée jamais supprimée | `outils/tests_unitaires.py`, `test_journaux_et_messages` |
-| Deux mutations prouvant que ces contrôles savent échouer | `outils/tests_mutation.py` |
+| Contrôles permanents : archives d'un voisin intactes, orphelines récentes conservées, anciennes résorbées | `outils/tests_unitaires.py`, `test_journaux_et_messages` |
+| Trois mutations prouvant que ces contrôles savent échouer | `outils/tests_mutation.py` |
+| Doublure d'API et contrôles des quatre greffons livrés hors dépôt, preuve par mutation comprise | `outils/suite/` |
 
 ---
 
@@ -224,3 +262,13 @@ Ce qu'il ne peut pas vérifier, et qui demande cette relecture manuelle :
 
 Un greffon supplémentaire dans la suite rend cette relecture obligatoire avant
 sa livraison.
+
+Pour les quatre greffons qui ne vivent pas ici :
+
+```
+python3 outils/suite/tests_purge_suite.py <dossier contenant les quatre .py>
+```
+
+Ces contrôles chargent réellement chaque greffon, avec une doublure de l'API
+GIMP, et exercent ses propres fonctions. Ils portent sur ce qui reste sur le
+disque après la purge — jamais sur l'absence d'erreur.

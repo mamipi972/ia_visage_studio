@@ -2148,11 +2148,16 @@ def ecrire_inventaire(details):
 #    s'applique qu'aux siennes : voir archives_du_greffon().
 # ==============================================================================
 NOM_FICHIER_INCIDENT = "incident.json"
+# Age au-dela duquel une archive que personne ne revendique peut etre
+# supprimee. Elles viennent des versions anterieures a ce marqueur, et des
+# greffons de la suite qui ne le posent pas encore.
+JOURS_ARCHIVES_ORPHELINES = 30
 
 
-def archives_du_greffon(racine):
-    """Archives produites par CE greffon, triees de la plus ancienne a la plus
-    recente, datees par leur contenu et non par leur nom.
+def _inventaire_archives(racine):
+    """Repartit les archives de logs/ : les miennes, et celles que personne ne
+    revendique. Chacune triee de la plus ancienne a la plus recente, datee par
+    son contenu et non par son nom.
 
     Le dossier logs/ est partage, et deux conventions de nommage y cohabitent
     dans la suite : "2026-09-16_19-44-05" pour certains greffons,
@@ -2174,30 +2179,69 @@ def archives_du_greffon(racine):
     supprimee : elle restera, ce qui est preferable a effacer celle d'un
     voisin.
     """
-    trouvees = []
+    miennes = []
+    orphelines = []
     try:
         noms = os.listdir(racine)
     except Exception:
-        return []
+        return [], []
     for nom in noms:
         chemin = os.path.join(racine, nom)
+        if not os.path.isdir(chemin):
+            continue
         marque = os.path.join(chemin, NOM_FICHIER_INCIDENT)
-        if not os.path.isdir(chemin) or not os.path.isfile(marque):
-            continue
-        try:
-            with open(marque, "r", encoding="utf-8", errors="replace") as f:
-                donnees = json.load(f)
-        except Exception:
-            continue
-        if not isinstance(donnees, dict) or donnees.get("greffon") != PLUGIN_ID:
-            continue
-        try:
-            date = os.path.getmtime(marque)
-        except Exception:
-            date = 0.0
-        trouvees.append((date, nom, chemin))
-    trouvees.sort()
-    return [chemin for _, _, chemin in trouvees]
+        donnees = None
+        if os.path.isfile(marque):
+            try:
+                with open(marque, "r", encoding="utf-8", errors="replace") as f:
+                    donnees = json.load(f)
+            except Exception:
+                donnees = None
+        if isinstance(donnees, dict) and donnees.get("greffon") == PLUGIN_ID:
+            try:
+                date = os.path.getmtime(marque)
+            except Exception:
+                date = 0.0
+            miennes.append((date, nom, chemin))
+        elif not isinstance(donnees, dict):
+            # Personne ne revendique cette archive : elle est anterieure au
+            # marqueur, ou vient d'un greffon qui ne le pose pas encore.
+            try:
+                date = os.path.getmtime(chemin)
+            except Exception:
+                date = 0.0
+            orphelines.append((date, nom, chemin))
+    miennes.sort()
+    orphelines.sort()
+    return miennes, orphelines
+
+
+def archives_du_greffon(racine):
+    """Archives produites par ce greffon, de la plus ancienne a la plus
+    recente."""
+    return [chemin for _, _, chemin in _inventaire_archives(racine)[0]]
+
+
+def purger_journaux(racine):
+    """Purge les archives de ce greffon, et resorbe le stock orphelin.
+
+    Une archive que personne ne revendique n'est supprimee qu'a deux
+    conditions reunies : etre plus vieille que JOURS_ARCHIVES_ORPHELINES, et
+    ne pas figurer parmi les ARCHIVES_A_CONSERVER plus recentes d'entre elles.
+    Un greffon de la suite qui n'aurait pas encore recu ce correctif garde
+    ainsi ses archives recentes, et le stock ancien se resorbe quand meme.
+
+    Retourne les chemins supprimes, pour que le comportement soit verifiable
+    autrement que par une inspection du dossier.
+    """
+    miennes, orphelines = _inventaire_archives(racine)
+    limite = time.time() - JOURS_ARCHIVES_ORPHELINES * 86400
+    condamnees = [chemin for _, _, chemin in miennes[:-ARCHIVES_A_CONSERVER]]
+    condamnees += [chemin for date, _, chemin
+                   in orphelines[:-ARCHIVES_A_CONSERVER] if date < limite]
+    for chemin in condamnees:
+        shutil.rmtree(chemin, ignore_errors=True)
+    return condamnees
 
 
 def archiver_journaux(dossier_travail, contexte=None):
@@ -2231,8 +2275,7 @@ def archiver_journaux(dossier_travail, contexte=None):
                              os.path.join(cible, nom))
             except Exception:
                 pass
-        for vieux in archives_du_greffon(racine)[:-ARCHIVES_A_CONSERVER]:
-            shutil.rmtree(vieux, ignore_errors=True)
+        purger_journaux(racine)
         return cible
     except Exception as e:
         journal("archivage impossible: %s" % e)

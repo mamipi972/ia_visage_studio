@@ -355,8 +355,13 @@ que ses propres archives** — celles qui portent un `incident.json` à son nom 
 et il les date par le contenu, pas par le nom du dossier. Deux conventions de
 nommage cohabitent dans la suite, et en ASCII le tiret précède le chiffre : une
 purge alphabétique supprimerait systématiquement les archives des autres
-greffons avant les siennes. Voir [`AUDIT_DE_SUITE.md`](AUDIT_DE_SUITE.md). Une
-archive que le greffon ne sait pas identifier n'est jamais supprimée.
+greffons avant les siennes. Voir [`AUDIT_DE_SUITE.md`](AUDIT_DE_SUITE.md).
+
+Une archive que personne ne revendique — antérieure à ce marqueur, ou produite
+par un greffon qui ne le pose pas encore — n'est supprimée qu'à **deux
+conditions réunies** : avoir plus de trente jours, et ne pas figurer parmi les
+dix plus récentes d'entre elles. Le stock ancien se résorbe donc, sans qu'une
+archive récente soit jamais menacée.
 
 Vous n'avez **ni variable d'environnement à poser, ni terminal à ouvrir** pour
 produire un rapport de bogue. Si le diagnostic en dépendait, il n'existerait
@@ -448,7 +453,7 @@ contrôle qu'on corrige, avant de livrer.
 ### Pourquoi une preuve par mutation
 
 Un test qui passe ne prouve rien tant qu'on n'a pas vérifié qu'il sait échouer.
-`tests_mutation.py` remet trente comportements fautifs dans une copie du
+`tests_mutation.py` remet trente et un comportements fautifs dans une copie du
 code et vérifie que le contrôle correspondant passe au rouge — oubli du
 décalage de mise en lettre-boîte, pivot laissé en BGR, normalisation ignorée,
 16 bits traité comme du 8 bits, table de préséance désactivée, plafond mémoire
