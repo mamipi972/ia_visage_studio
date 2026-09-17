@@ -448,6 +448,73 @@ def test_degradation_des_modeles():
         bac.fermer()
 
 
+def test_libelle_des_modeles():
+    """Ce que la case promet doit etre ce que le code sait faire.
+
+    Trois situations distinctes se ressemblent a l'usage et n'ont pas du tout
+    la meme reponse : une adresse verifiee, une absence sans recours, et une
+    absence que l'utilisateur peut lever lui-meme. Les confondre, c'est soit
+    promettre un telechargement qui n'aura pas lieu, soit decrire comme morte
+    une case qui ne l'est pas.
+    """
+    print("Modeles : le libelle de la case dit ce que le code sait faire")
+    bac = Bac()
+    try:
+        module = bac.module
+        verifie = module.annonce_cout(module.ROLE_DETECTION_YUNET)
+        controler("une source verifiee annonce un telechargement",
+                  "telecharges au premier usage" in verifie, verifie)
+
+        sans_recours = module.annonce_cout(module.ROLE_SOURIRE)
+        controler("une absence sans recours demande le depot du fichier",
+                  "a fournir" in sans_recours
+                  and module.MODELES[module.ROLE_SOURIRE]["fichier"] in sans_recours,
+                  sans_recours)
+        controler("et elle ne promet aucun telechargement",
+                  "telecharg" not in sans_recours.replace(
+                      "pas d'adresse pour le telecharger", ""),
+                  sans_recours)
+
+        entree = module.MODELES[module.ROLE_AMELIORATION]
+        # Lu une fois, avec un defaut : sans cela, l'absence de la cle leverait
+        # une exception a la ligne suivante et interromprait le test. Un
+        # controle qui plante au lieu de virer au rouge ne dit plus lequel des
+        # mecanismes a cede.
+        script = entree.get("convertisseur") or "<aucun convertisseur declare>"
+        controler("le modele d'amelioration declare un convertisseur",
+                  bool(entree.get("convertisseur")), script)
+        nom_script = os.path.basename(script)
+        fabricable = module.annonce_cout(module.ROLE_AMELIORATION)
+        controler("une absence reparable annonce la fabrication",
+                  "a fabriquer" in fabricable, fabricable)
+        controler("et nomme le script, sans le laisser chercher",
+                  nom_script in fabricable, fabricable)
+
+        message = module.message_depot_manuel([module.ROLE_AMELIORATION])
+        controler("le message de dernier recours nomme lui aussi le script",
+                  nom_script in message, message[:300])
+
+        # Le greffon s'installe seul, sans le reste du depot : quand le script
+        # est joignable, le chemin annonce doit etre celui qu'on peut ouvrir,
+        # et non un chemin relatif a un dossier que l'utilisateur n'a pas.
+        resolu = module.convertisseur_du_modele(module.ROLE_AMELIORATION)
+        controler("le chemin annonce existe quand le script est joignable",
+                  os.path.isabs(resolu) and os.path.isfile(resolu),
+                  str(resolu))
+        controler("et le libelle reprend ce chemin resolu",
+                  resolu in fabricable, fabricable)
+
+        # Le libelle se derive de la table : retirer le convertisseur doit
+        # ramener le message au depot manuel, et non laisser une promesse.
+        entree.pop("convertisseur", None)
+        retombee = module.annonce_cout(module.ROLE_AMELIORATION)
+        controler("sans convertisseur declare, le libelle redevient un depot",
+                  "a fournir" in retombee and "a fabriquer" not in retombee,
+                  retombee)
+    finally:
+        bac.fermer()
+
+
 def test_sources_utilisateur():
     print("Modeles : sources_modeles.json complete la table du code")
     bac = Bac()
@@ -1098,6 +1165,7 @@ def main():
     test_vraisemblance_et_fichier_inutilisable()
     test_telechargement_annonce_et_seuil()
     test_degradation_des_modeles()
+    test_libelle_des_modeles()
     test_sources_utilisateur()
     test_tofu()
     test_refus_gpu_avant_telechargement()

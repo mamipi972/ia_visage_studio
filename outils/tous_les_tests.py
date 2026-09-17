@@ -24,6 +24,8 @@ ETAPES = [
     ("Tests du worker", "tests_worker.py", ["numpy", "cv2"]),
     ("Tests d'integration", "tests_integration.py", ["numpy", "cv2"]),
     ("Detecteur YuNet (vrai modele)", "tests_yunet.py", ["numpy", "cv2"]),
+    ("Modele d'amelioration (vrai fichier)", "tests_gfpgan.py",
+     ["numpy", "cv2"]),
     ("Preuve par mutation", "tests_mutation.py", ["numpy", "cv2"]),
 ]
 

@@ -63,7 +63,7 @@ table de préséance exclut (voir plus bas).
 | --- | --- | --- | --- | --- |
 | **Anonymiser les visages** | Flou gaussien ou mosaïque sur chaque visage | aucun | — | fonctionne toujours |
 | **Faire sourire les visages** | Modifie l'expression sur chaque vignette | `attgan_smile.onnx` | **à fournir** | l'étape est ignorée, et le motif affiché |
-| **Améliorer les visages** | Restaure les détails de peau et d'yeux | `gfpgan_1_4.onnx` (~340 Mo) | **à fournir** | rehaussement sans IA (masque flou + lissage) |
+| **Améliorer les visages** | Restaure les détails de peau et d'yeux | `gfpgan_1_4.onnx` (~325 Mo) | **fabricable** ([`outils/conversion/`](outils/conversion/LISEZMOI.md)) | rehaussement sans IA (masque flou + lissage) |
 | **Coloriser l'image** | Colorise toute l'image, luminance conservée | `deoldify_artistic.onnx` | **à fournir** | l'étape est ignorée, et le motif affiché |
 
 Toutes ces opérations ont d'abord besoin de **détecter les visages**, ce que le
@@ -307,6 +307,17 @@ dit avant que vous ne la cochiez. Trois conséquences, toutes prévues :
   Ces adresses passent devant celles du code. Ce fichier est facultatif : il
   existe pour qu'une adresse devenue morte se répare sans édition de code, ce
   que ce greffon ne demandera jamais.
+
+- **Un modèle se fabrique.** Les poids officiels de GFPGAN v1.4 sont publiés
+  en PyTorch sur les *Releases* du projet, et ceux-là répondent. Le script
+  [`outils/conversion/convertir_gfpgan.py`](outils/conversion/convertir_gfpgan.py)
+  les convertit en ONNX sans rien demander : il crée son propre environnement,
+  télécharge, exporte, **vérifie que le fichier produit rejoue la référence
+  PyTorch**, puis le dépose là où le greffon le cherche — y compris quand
+  votre installation utilise un autre dossier de données que l'emplacement
+  canonique, qu'il lit dans le marqueur. Le banc
+  [`outils/tests_gfpgan.py`](outils/tests_gfpgan.py) reprend le fichier obtenu
+  et le fait tourner dans le vrai code d'inférence du greffon.
 
 Le message affiché en fin de traitement **donne ces deux chemins** — le dossier
 de dépôt et celui de `sources_modeles.json` — pour chaque modèle manquant.

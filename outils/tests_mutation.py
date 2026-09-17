@@ -200,6 +200,55 @@ MUTATIONS_WORKER = [
 # ---------------------------------------------------------------------------
 MUTATIONS_GREFFON = [
     {
+        "nom": "le libelle ignore le convertisseur declare",
+        "pourquoi": "la case annoncerait un modele a fournir alors que le "
+                    "depot livre de quoi le fabriquer : l'utilisateur "
+                    "renoncerait a une operation disponible, et rien ne le "
+                    "detromperait",
+        # Le motif complet, commentaire compris : les deux messages qui
+        # nomment le convertisseur ouvrent sur les memes deux lignes, et un
+        # motif ambigu muterait celui qu'on ne croit pas.
+        "remplacements": [(
+            "        convertisseur = convertisseur_du_modele(role)\n"
+            "        if convertisseur:\n"
+            "            # Annoncer une absence sans dire qu'elle se repare "
+            "reviendrait a\n",
+            "        convertisseur = None\n"
+            "        if convertisseur:\n"
+            "            # Annoncer une absence sans dire qu'elle se repare "
+            "reviendrait a\n")],
+        "tests": ["test_libelle_des_modeles"],
+        "rouges": ["une absence reparable annonce la fabrication",
+                   "et nomme le script, sans le laisser chercher",
+                   "et le libelle reprend ce chemin resolu"],
+    },
+    {
+        "nom": "le chemin du convertisseur n'est plus resolu",
+        "pourquoi": "le greffon s'installe seul, sans le reste du depot : un "
+                    "chemin relatif annonce tel quel designe un dossier que "
+                    "l'utilisateur n'a pas, et le recours devient introuvable",
+        "remplacements": [(
+            "    for racine in (base, os.path.dirname(base)):\n"
+            "        candidat = os.path.join(racine, *morceaux)\n"
+            "        if os.path.isfile(candidat):\n"
+            "            return candidat\n",
+            "")],
+        "tests": ["test_libelle_des_modeles"],
+        "rouges": ["le chemin annonce existe quand le script est joignable"],
+    },
+    {
+        "nom": "le convertisseur disparait de la table des modeles",
+        "pourquoi": "le libelle se derivant de la table, une entree amputee "
+                    "suffit a faire disparaitre le recours partout a la fois, "
+                    "sans qu'aucune ligne de message n'ait ete touchee",
+        "remplacements": [(
+            "        \"convertisseur\": CONVERTISSEUR_GFPGAN,\n", "")],
+        "tests": ["test_libelle_des_modeles"],
+        "rouges": ["le modele d'amelioration declare un convertisseur",
+                   "une absence reparable annonce la fabrication",
+                   "le message de dernier recours nomme lui aussi le script"],
+    },
+    {
         "nom": "la table de preseance du greffon est desactivee",
         "pourquoi": "le fichier de parametres partirait avec des intentions "
                     "contradictoires, et l'ordre d'application tiendrait du "

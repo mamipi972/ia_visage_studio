@@ -303,6 +303,12 @@ MARQUEURS_WORKER = (
 # ==============================================================================
 FICHIER_SOURCES_UTILISATEUR = "sources_modeles.json"
 
+# Certains modeles n'ont aucune adresse qui reponde, mais leurs poids
+# d'origine, eux, sont publies : ils se fabriquent. Le chemin est relatif au
+# depot du greffon, et le nommer ici plutot que dans deux messages evite
+# qu'un renommage n'en corrige qu'un seul.
+CONVERTISSEUR_GFPGAN = "outils/conversion/convertir_gfpgan.py"
+
 ROLE_DETECTION = "detection"
 ROLE_DETECTION_YUNET = "detection_yunet"
 ROLE_SOURIRE = "sourire"
@@ -362,13 +368,19 @@ MODELES = {
     },
     ROLE_AMELIORATION: {
         "fichier": "gfpgan_1_4.onnx",
-        "taille_declaree": 340 * 1024 * 1024,
+        # Mesure, et non estime : deux exports faits ici pesaient 340 360 308
+        # et 340 363 267 octets. La valeur ne sert qu'a l'affichage, aucune
+        # adresse n'etant declaree - raison de plus pour qu'elle soit juste.
+        "taille_declaree": 325 * 1024 * 1024,
         # Cette adresse renvoyait HTTP 404 chez l'utilisateur le 2026-09-17,
         # comme les deux du detecteur avant elle. Retiree pour la meme raison.
         # Les poids officiels .pth, eux, restent joignables sur les Releases
         # GitHub de GFPGAN : la conversion en ONNX est une piste, pas une
         # adresse.
         "sources": [],
+        # Faute d'adresse, ce modele se fabrique : le convertisseur part des
+        # poids PyTorch officiels, qui eux repondent.
+        "convertisseur": CONVERTISSEUR_GFPGAN,
         "taille_entree": 512,
         "normalisation": [0.5, 0.5],
         "espace": "RGB",
@@ -408,6 +420,32 @@ FOURNISSEURS_GPU = [
 FOURNISSEURS_CPU = ["CPUExecutionProvider"]
 
 
+def convertisseur_du_modele(role):
+    """Chemin du script qui fabrique ce modele, absolu quand il est joignable.
+
+    Le greffon s'installe seul : un seul fichier depose dans plug-ins/, sans
+    le reste du depot. Annoncer "outils/conversion/..." a quelqu'un qui n'a
+    que le greffon reviendrait a le renvoyer chercher - exactement le reproche
+    fait aux messages qui constatent sans indiquer. Quand le script est la, on
+    donne son chemin exact ; sinon, on dit d'ou il vient.
+    """
+    relatif = MODELES.get(role, {}).get("convertisseur")
+    if not relatif:
+        return None
+    morceaux = relatif.split("/")
+    try:
+        base = os.path.dirname(os.path.realpath(__file__))
+    except Exception:
+        return relatif
+    # A cote du greffon, puis un cran au-dessus : le fichier livre vit dans le
+    # depot, mais il se copie aussi bien a cote du greffon installe.
+    for racine in (base, os.path.dirname(base)):
+        candidat = os.path.join(racine, *morceaux)
+        if os.path.isfile(candidat):
+            return candidat
+    return relatif + ", fourni avec le depot du greffon"
+
+
 def annonce_cout(role):
     """Ce que coute reellement une option, derive de la table des modeles.
 
@@ -421,6 +459,12 @@ def annonce_cout(role):
     entree = MODELES[role]
     taille = octets_lisibles(entree.get("taille_declaree", 0))
     if not entree["sources"]:
+        convertisseur = convertisseur_du_modele(role)
+        if convertisseur:
+            # Annoncer une absence sans dire qu'elle se repare reviendrait a
+            # decrire la case comme morte alors qu'elle ne l'est pas.
+            return ("modele a fabriquer : %s le produit en une fois, puis "
+                    "cochez de nouveau" % convertisseur)
         return ("modele a fournir : deposez %s dans le dossier des modeles, le "
                 "greffon n'a pas d'adresse pour le telecharger"
                 % entree["fichier"])
@@ -2336,6 +2380,9 @@ def message_depot_manuel(roles, entete=None):
                          entree["taille_entree"], entree["taille_entree"]))
         for url in sources_du_modele(role):
             lignes.append("      " + url)
+        convertisseur = convertisseur_du_modele(role)
+        if convertisseur:
+            lignes.append("      ce modele se fabrique : " + convertisseur)
     lignes.append("")
     lignes.append("Un autre export ONNX du meme modele convient s'il respecte "
                   "ce format d'entree.")

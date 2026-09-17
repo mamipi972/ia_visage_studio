@@ -106,7 +106,7 @@ adresse ne répond pas.
 | détection (défaut) | `face_detection_yunet_2023mar.onnx` | 232 589 octets — **mesurée** | variable, `YUNET_COTE_MAX` au plus | gérée par OpenCV | **vérifiée** le 2026-09-17 |
 | détection (alternative) | `yolov8n-face.onnx` | 13 Mo | 640 x 640 | `x / 255` | aucune — à fournir |
 | sourire | `attgan_smile.onnx` | 150 Mo | 256 x 256 | `x / 127,5 - 1` | aucune — à fournir |
-| amélioration | `gfpgan_1_4.onnx` | 340 Mo | 512 x 512 | `x / 127,5 - 1` | aucune — à fournir |
+| amélioration | `gfpgan_1_4.onnx` | 325 Mo — **mesurée** | 512 x 512 | `x / 127,5 - 1` | aucune — **se fabrique**, `outils/conversion/` |
 | colorisation | `deoldify_artistic.onnx` | 250 Mo | 256 x 256 | `x / 127,5 - 1` | aucune — à fournir |
 
 Les rôles sans adresse déclarée ne sont **jamais** téléchargés automatiquement :
