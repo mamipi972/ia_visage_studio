@@ -59,17 +59,37 @@ pendant le transport.
 Chaque case correspond à une opération. Elles se cumulent, sauf celles que la
 table de préséance exclut (voir plus bas).
 
-| Case | Ce qu'elle fait | Modèle | Sans le modèle |
-| --- | --- | --- | --- |
-| **Anonymiser les visages** | Flou gaussien ou mosaïque sur chaque visage | aucun | fonctionne toujours |
-| **Faire sourire les visages** | Modifie l'expression sur chaque vignette | `attgan_smile.onnx` (~150 Mo) | l'étape est ignorée, et le motif affiché |
-| **Améliorer les visages** | Restaure les détails de peau et d'yeux | `gfpgan_1_4.onnx` (~340 Mo) | rehaussement sans IA (masque flou + lissage) |
-| **Coloriser l'image** | Colorise toute l'image, luminance conservée | `deoldify_artistic.onnx` (~250 Mo) | l'étape est ignorée, et le motif affiché |
+| Case | Ce qu'elle fait | Modèle | Source | Sans le modèle |
+| --- | --- | --- | --- | --- |
+| **Anonymiser les visages** | Flou gaussien ou mosaïque sur chaque visage | aucun | — | fonctionne toujours |
+| **Faire sourire les visages** | Modifie l'expression sur chaque vignette | `attgan_smile.onnx` | **à fournir** | l'étape est ignorée, et le motif affiché |
+| **Améliorer les visages** | Restaure les détails de peau et d'yeux | `gfpgan_1_4.onnx` (~340 Mo) | déclarée, non vérifiée | rehaussement sans IA (masque flou + lissage) |
+| **Coloriser l'image** | Colorise toute l'image, luminance conservée | `deoldify_artistic.onnx` | **à fournir** | l'étape est ignorée, et le motif affiché |
 
-**L'anonymisation ne dépend d'aucun modèle d'IA et d'aucun téléchargement.**
+Toutes ces opérations ont d'abord besoin de **détecter les visages**, ce que le
+greffon sait faire seul :
+
+| Détecteur | Poids | Source | Quand |
+| --- | --- | --- | --- |
+| `face_detection_yunet_2023mar.onnx` | 227 Ko | **vérifiée** (zoo de modèles d'OpenCV, Apache-2.0) | par défaut ; téléchargé seul au premier usage |
+| `yolov8n-face.onnx` | ~13 Mo | **à fournir** | s'il est déjà sur le disque — un fichier déposé l'a été délibérément, il passe donc devant |
+| cascade de Haar | livrée avec OpenCV 4.x | — | si aucun modèle n'est disponible |
+| votre sélection | — | — | si aucun détecteur n'aboutit |
+
+**L'anonymisation ne dépend d'aucun modèle lourd et d'aucun réseau.**
 C'est délibéré : c'est l'opération dont on a besoin quand on en a besoin, et
 elle ne doit dépendre ni du réseau, ni d'un fichier de plusieurs centaines de
-mégaoctets.
+mégaoctets. Le détecteur par défaut pèse 227 Ko.
+
+**« Source vérifiée » veut dire quelque chose de précis** : le fichier a été
+téléchargé depuis cette adresse, chargé par OpenCV et exécuté depuis ce dépôt.
+« Déclarée, non vérifiée » veut dire que l'adresse est écrite dans le code mais
+que personne ne l'a jointe : le libellé de la case le dit, et l'opération
+dégrade si elle ne répond pas. Deux adresses HuggingFace pour le détecteur
+YOLOv8 figuraient ici et renvoyaient **HTTP 401** chez un utilisateur — dépôt
+disparu ou devenu privé. Elles ont été retirées : une adresse dont on sait
+qu'elle ne répond pas ne vaut pas mieux que pas d'adresse, et elle coûte une
+requête à chaque lancement.
 
 ### Réglages
 
@@ -188,7 +208,9 @@ Tout se fait seul, avec la barre de progression animée :
    `opencv-python-headless` et `onnxruntime` — les trois seules dépendances que
    le worker importe réellement.
 3. **Téléchargement des modèles nécessaires aux cases cochées**, taille annoncée
-   avant de commencer. Une case décochée ne télécharge rien.
+   avant de commencer. Une case décochée ne télécharge rien. Seul le détecteur
+   YuNet (227 Ko) a une adresse vérifiée ; les autres modèles se déposent à la
+   main, et le message vous dit où.
 4. **Traitement**, dans un processus séparé de GIMP.
 
 Les lancements suivants sautent directement à l'étape 4 : un marqueur
@@ -253,9 +275,15 @@ nécessaire.
 
 ## Où trouver les modèles
 
-Les adresses de téléchargement inscrites dans le code **n'ont pas pu être
-vérifiées depuis le dépôt de développement** : son réseau ne joint pas les
-hébergeurs de poids. Trois conséquences, toutes prévues :
+**Le détecteur, lui, s'obtient tout seul.** `face_detection_yunet_2023mar.onnx`
+pèse 227 Ko, vient du zoo de modèles d'OpenCV, et son adresse a été vérifiée :
+téléchargée, chargée et exécutée depuis ce dépôt le 2026-09-17. C'est le seul
+modèle de la table dans ce cas, et c'est pourquoi c'est le seul que le greffon
+va chercher de sa propre initiative.
+
+Les trois autres adresses **n'ont pas pu être vérifiées** : le réseau du dépôt
+de développement ne joint pas leurs hébergeurs. Le libellé de chaque case le
+dit avant que vous ne la cochiez. Trois conséquences, toutes prévues :
 
 - **Une adresse morte ne bloque rien.** L'opération dégrade — vers son chemin
   sans IA quand il en existe un, sinon elle est ignorée — et le motif est
@@ -277,6 +305,11 @@ hébergeurs de poids. Trois conséquences, toutes prévues :
   Ces adresses passent devant celles du code. Ce fichier est facultatif : il
   existe pour qu'une adresse devenue morte se répare sans édition de code, ce
   que ce greffon ne demandera jamais.
+
+Le message affiché en fin de traitement **donne ces deux chemins** — le dossier
+de dépôt et celui de `sources_modeles.json` — pour chaque modèle manquant.
+Constater une absence sans dire comment y remédier obligerait à quitter GIMP
+pour chercher, et c'est précisément ce que ce greffon ne doit jamais demander.
 
 **N'importe quel export ONNX convient** s'il respecte le format d'entrée du
 tableau. Les quatre contrats sont dans
@@ -389,9 +422,15 @@ ci-dessus : elle le complète.
 - **La qualité des modèles n'est pas de son ressort.** Il applique l'export ONNX
   qu'on lui donne. Un modèle de sourire médiocre produira des sourires
   médiocres.
-- **Les adresses de téléchargement ne sont pas vérifiées.** Voir
-  [Où trouver les modèles](#où-trouver-les-modèles). Aucune n'a été testée
-  depuis ce dépôt.
+- **Une seule adresse de téléchargement a été vérifiée** : celle du détecteur
+  YuNet. Les trois autres modèles sont à fournir, et le libellé de chaque case
+  le dit avant que vous ne la cochiez. Voir
+  [Où trouver les modèles](#où-trouver-les-modèles).
+- **Le banc d'essai ne distingue pas une inversion RGB/BGR à l'entrée de
+  YuNet.** Mesuré le 2026-09-17 : la permutation fait tomber le score de 0,90 à
+  0,80 et décale la boîte de quelques pixels, sans jamais empêcher la
+  détection. La conversion est faite selon le contrat d'OpenCV, mais aucun test
+  ne saurait dire qu'elle a été oubliée.
 - **Aucun repère de durée n'a été mesuré.** Les cases de
   [`TABLE_DES_VALEURS.md`](TABLE_DES_VALEURS.md) sont vides, et c'est voulu :
   une estimation plausible serait indiscernable d'une mesure.
@@ -445,6 +484,7 @@ contrôle qu'on corrige, avant de livrer.
 | `outils/tests_unitaires.py` | Le greffon hors de GIMP, par la doublure d'API : arbitrage, découverte d'interpréteur sur une sortie réelle capturée, emplacements, marqueur, modèles face à un vrai serveur HTTP local, refus GPU, archivage, processus orphelins. |
 | `outils/tests_worker.py` | Le worker de bout en bout, contre une doublure d'`onnxruntime` **qui vérifie le contrat des modèles et répond en fonction de son entrée**. |
 | `outils/tests_integration.py` | `run_procedure` du début à la fin, hors de GIMP : vrai sous-processus, vrai fichier de paramètres, vrai calque produit, et l'enregistrement du greffon quand un appel d'API échoue. |
+| `outils/tests_yunet.py` | Le détecteur par défaut, sur le **vrai** modèle : téléchargement, chargement par OpenCV, position des boîtes après remise à l'échelle. Ignoré, en le disant, si le modèle est injoignable. |
 | `outils/tests_mutation.py` | La preuve par mutation : chaque correctif est remis en défaut, et son test doit alors échouer. |
 | `outils/faux_gimp.py` | La doublure de l'API GIMP 3.0, une centaine de lignes. |
 | `outils/sorties_reelles/` | Sorties réelles capturées, contre lesquelles les stratégies de détection sont testées. |
@@ -453,7 +493,7 @@ contrôle qu'on corrige, avant de livrer.
 ### Pourquoi une preuve par mutation
 
 Un test qui passe ne prouve rien tant qu'on n'a pas vérifié qu'il sait échouer.
-`tests_mutation.py` remet trente et un comportements fautifs dans une copie du
+`tests_mutation.py` remet trente-trois comportements fautifs dans une copie du
 code et vérifie que le contrôle correspondant passe au rouge — oubli du
 décalage de mise en lettre-boîte, pivot laissé en BGR, normalisation ignorée,
 16 bits traité comme du 8 bits, table de préséance désactivée, plafond mémoire
@@ -536,7 +576,10 @@ CPU with a one-line reason instead of an error message.
 
 **Not guaranteed.** Version 1.0 has never been run inside GIMP (stated
 2026-09-16 by the repository author: the development environment has neither
-GIMP nor the model weights). Download URLs are declared, not verified. No
+GIMP nor the model weights). Only one download URL has been verified — the
+default YuNet face detector (227 KB, from OpenCV's model zoo), downloaded,
+loaded and run from this repository on 2026-09-17. The other three models must
+be supplied by hand, and each checkbox says so before you tick it. No
 timing figures have been measured, and the table in `TABLE_DES_VALEURS.md`
 leaves those cells empty on purpose. There is no memory ceiling on Windows —
 the POSIX one is in place and proven by a test. Cancellation detection depends

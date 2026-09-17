@@ -38,6 +38,7 @@ CHEMIN_GREFFON = os.path.join(RACINE, "ia_visage_studio.py")
 import tests_worker
 import tests_unitaires
 import tests_integration
+import tests_yunet
 
 
 # ---------------------------------------------------------------------------
@@ -447,6 +448,47 @@ MUTATIONS_INTEGRATION = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# Mutations verifiees sur le VRAI modele de detection. Ce sont les seules qui
+# portent sur un chemin qu'aucune doublure ne couvre : ce que YuNet rend
+# vraiment, et ce que le greffon en fait.
+# ---------------------------------------------------------------------------
+MUTATIONS_YUNET = [
+    {
+        "nom": "la remise a l'echelle des boites de YuNet est oubliee",
+        "pourquoi": "l'image est reduite avant detection : sans conversion "
+                    "inverse, toute grande photo verrait le traitement "
+                    "atterrir dans son coin superieur gauche, sans la moindre "
+                    "erreur",
+        "remplacements": [(
+            "        bx = max(0.0, float(ligne[0]) / echelle)\n"
+            "        by = max(0.0, float(ligne[1]) / echelle)\n"
+            "        bl = min(float(ligne[2]) / echelle, largeur - bx)\n"
+            "        bh = min(float(ligne[3]) / echelle, hauteur - by)\n",
+            "        bx = max(0.0, float(ligne[0]))\n"
+            "        by = max(0.0, float(ligne[1]))\n"
+            "        bl = min(float(ligne[2]), largeur - bx)\n"
+            "        bh = min(float(ligne[3]), hauteur - by)\n")],
+        "tests": ["test_grande_image"],
+        "rouges": ["cas 1 : la zone traitee contient le visage, dans les "
+                   "coordonnees de l'image d'origine",
+                   "cas 1 : la boite n'est pas restee dans l'espace reduit"],
+    },
+    {
+        "nom": "l'image n'est plus reduite avant detection",
+        "pourquoi": "une photo de douze megapixels passerait entiere dans "
+                    "YuNet ; le controle du facteur d'echelle est la pour que "
+                    "la reduction reste constatee et non supposee",
+        "remplacements": [(
+            "    echelle = min(1.0, float(cote_max) / float(max(hauteur, largeur)))\n",
+            "    echelle = 1.0\n")],
+        "tests": ["test_grande_image"],
+        "rouges": ["cas 1 : la reduction a bien eu lieu"],
+    },
+]
+
+
+
 # Les deux tables de preseance se rattrapent l'une l'autre. Les desactiver
 # separement donne deux tests verts - deux fausses preuves - parce que chaque
 # mecanisme couvre seul le cas signale. Ce n'est qu'en les retirant tous les
@@ -615,6 +657,50 @@ def mutations_d_integration():
                   " | ".join(problemes))
 
 
+def mutations_yunet():
+    print("Mutations verifiees sur le vrai modele de detection")
+    dossier_modele = tempfile.mkdtemp(prefix="mutation_yunet_")
+    try:
+        modele, origine = tests_yunet.obtenir_modele(dossier_modele)
+        if not modele:
+            controler("modele YuNet disponible pour la preuve par mutation",
+                      True)
+            print("  NOTE  modele indisponible (%s) : ces mutations sont "
+                  "ignorees." % str(origine)[:120])
+            return
+        # Le modele est deja la : les tests ne le retelechargeront pas.
+        os.environ["IA_VISAGE_YUNET"] = modele
+        original = open(CHEMIN_GREFFON, encoding="utf-8").read()
+        for mutation in MUTATIONS_YUNET:
+            try:
+                mute = appliquer(original, mutation["remplacements"],
+                                 mutation["nom"])
+            except AssertionError as e:
+                controler("mutation applicable : " + mutation["nom"], False,
+                          str(e))
+                continue
+            dossier = tempfile.mkdtemp(prefix="mutation_yunet_greffon_")
+            chemin = os.path.join(dossier, "ia_visage_studio.py")
+            with open(chemin, "w", encoding="utf-8", newline="\n") as f:
+                f.write(mute)
+            tests_yunet.FICHIER_GREFFON = chemin
+            tests_worker.FICHIER_GREFFON = chemin
+            tests_yunet._TABLE = None
+            try:
+                resultats, incident = executer(tests_yunet, mutation["tests"])
+            finally:
+                tests_yunet.FICHIER_GREFFON = CHEMIN_GREFFON
+                tests_worker.FICHIER_GREFFON = CHEMIN_GREFFON
+                tests_yunet._TABLE = None
+                shutil.rmtree(dossier, ignore_errors=True)
+            problemes = verifier_attentes(mutation, resultats, incident)
+            controler("mutation detectee : " + mutation["nom"], not problemes,
+                      " | ".join(problemes))
+    finally:
+        os.environ.pop("IA_VISAGE_YUNET", None)
+        shutil.rmtree(dossier_modele, ignore_errors=True)
+
+
 def mutation_conjointe():
     print("Mutation conjointe des deux mecanismes redondants")
     mutation = MUTATION_CONJOINTE
@@ -664,6 +750,8 @@ def main():
     mutations_du_greffon()
     print("")
     mutations_d_integration()
+    print("")
+    mutations_yunet()
     print("")
     mutation_conjointe()
     print("")

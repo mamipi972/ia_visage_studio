@@ -29,9 +29,11 @@ Ce qui **a** été vérifié depuis ce dépôt, et comment :
 | Le greffon se charge et s'exerce hors de GIMP | `outils/tests_unitaires.py`, 97 contrôles | 2026-09-16 | 1.0 |
 | Le worker produit les bons artefacts contre une doublure d'`onnxruntime` | `outils/tests_worker.py`, 54 contrôles | 2026-09-16 | 1.0 |
 | `run_procedure` aboutit de bout en bout et produit un calque nommé | `outils/tests_integration.py`, 30 contrôles | 2026-09-16 | 1.0 |
-| Chaque correctif fait échouer son test quand on le remet en défaut | `outils/tests_mutation.py`, 31 mutations | 2026-09-16 | 1.0 |
+| Chaque correctif fait échouer son test quand on le remet en défaut | `outils/tests_mutation.py`, 33 mutations | 2026-09-16 | 1.0 |
 | Le plafond mémoire refuse bien une allocation trop grande | `tests_worker.py`, cas 11, POSIX uniquement | 2026-09-16 | 1.0 |
 | Les cascades de Haar disparaissent à partir d'OpenCV 5 | constat sur `opencv-python-headless` 5.0.0 et 4.14.0 | 2026-09-16 | 1.0 |
+| Le modèle YuNet se télécharge depuis l'adresse déclarée, pèse 232 589 octets, se charge dans OpenCV 4.14 et détecte un visage | `outils/tests_yunet.py`, 14 contrôles sur le **vrai** modèle | 2026-09-17 | 1.0 |
+| Les boîtes de YuNet sont bien remises à l'échelle de l'image d'origine | `outils/tests_yunet.py` + 2 mutations | 2026-09-17 | 1.0 |
 | Sur un venv déjà installé par un autre greffon : zéro `pip`, zéro création de venv | `outils/tests_unitaires.py`, `test_poste_deja_installe` | 2026-09-16 | 1.0 |
 | Les cinq greffons de la suite ne se détruisent pas mutuellement leurs ressources | [`AUDIT_DE_SUITE.md`](AUDIT_DE_SUITE.md), relecture croisée | 2026-09-16 | 1.0 |
 
@@ -87,7 +89,7 @@ processus. Aucune de ces valeurs n'a été mesurée sur un poste réel.
 | `AUTO_DOWNLOAD_MAX_BYTES` | 419430400 octets (400 Mo) | déclarée | **Seuil de téléchargement automatique, par fichier.** En deçà, le téléchargement se fait seul mais jamais en silence : la taille réelle annoncée par le serveur est affichée avant de commencer. Au-delà, le greffon refuse, l'opération dégrade et le chemin de dépôt est indiqué. |
 | `MODELE_TAILLE_MIN_BYTES` | 1048576 octets (1 Mo) | déclarée | Plancher de vraisemblance. Rejette un fichier nul, tronqué ou remplacé par une page d'erreur, avant toute lecture intégrale. |
 | `MODELE_TAILLE_MAX_BYTES` | 2147483648 octets (2 Go) | déclarée | **Plafond de vraisemblance**, sans aucun rapport avec le seuil de téléchargement ci-dessus : au-delà, le fichier déposé n'est manifestement pas un modèle de cette suite. Les deux répondent à deux questions différentes et ne doivent jamais être harmonisés. |
-| `ROLES_AVEC_REPLI` | detection, amelioration | déclarée | Rôles dont l'absence se rattrape par un chemin sans IA. Les deux autres (sourire, colorisation) n'ont pas d'équivalent : leur opération est annulée et le motif est dit en une phrase. |
+| `ROLES_AVEC_REPLI` | detection, detection_yunet, amelioration | déclarée | Rôles dont l'absence se rattrape par un chemin sans IA. Les deux autres (sourire, colorisation) n'ont pas d'équivalent : leur opération est annulée et le motif est dit en une phrase. |
 | `SOURIRE_VECTEUR_TAILLE` | 13 | déclarée | Taille du vecteur d'attributs attendu par le modèle de sourire. Dépend de l'export, jamais devinée par le worker : elle lui est transmise. |
 | `SOURIRE_INDICE_ATTRIBUT` | 12 | déclarée | Indice de l'attribut « sourire » dans ce vecteur. |
 
@@ -99,17 +101,26 @@ contrôle d'espace disque — la taille réellement affichée avant un
 téléchargement est celle que renvoie le serveur, et le greffon dégrade quand une
 adresse ne répond pas.
 
-| Rôle | Fichier attendu | Taille déclarée | Entrée | Normalisation | Adresses déclarées |
+| Rôle | Fichier attendu | Taille | Entrée | Normalisation | Source |
 | --- | --- | --- | --- | --- | --- |
-| détection | `yolov8n-face.onnx` | 13 Mo | 640 x 640 | `x / 255` | 2 |
-| sourire | `attgan_smile.onnx` | 150 Mo | 256 x 256 | `x / 127,5 - 1` | 0 |
-| amélioration | `gfpgan_1_4.onnx` | 340 Mo | 512 x 512 | `x / 127,5 - 1` | 1 |
-| colorisation | `deoldify_artistic.onnx` | 250 Mo | 256 x 256 | `x / 127,5 - 1` | 0 |
+| détection (défaut) | `face_detection_yunet_2023mar.onnx` | 232 589 octets — **mesurée** | variable, `YUNET_COTE_MAX` au plus | gérée par OpenCV | **vérifiée** le 2026-09-17 |
+| détection (alternative) | `yolov8n-face.onnx` | 13 Mo | 640 x 640 | `x / 255` | aucune — à fournir |
+| sourire | `attgan_smile.onnx` | 150 Mo | 256 x 256 | `x / 127,5 - 1` | aucune — à fournir |
+| amélioration | `gfpgan_1_4.onnx` | 340 Mo | 512 x 512 | `x / 127,5 - 1` | déclarée, **non vérifiée** |
+| colorisation | `deoldify_artistic.onnx` | 250 Mo | 256 x 256 | `x / 127,5 - 1` | aucune — à fournir |
 
 Les rôles sans adresse déclarée ne sont **jamais** téléchargés automatiquement :
 le fichier se dépose à la main dans le dossier des modèles, ou son adresse
-s'ajoute dans `sources_modeles.json`. Le greffon le dit explicitement plutôt
-que de tenter une adresse inventée.
+s'ajoute dans `sources_modeles.json`. Le libellé de la case de l'interface le
+dit **avant** que vous ne la cochiez, et ce libellé est calculé à partir de
+cette table — il ne peut donc plus promettre un téléchargement que le code ne
+sait pas faire.
+
+Les deux adresses HuggingFace du détecteur YOLOv8 ont été **retirées** le
+2026-09-17 : elles renvoyaient `HTTP 401` chez un utilisateur, le dépôt ayant
+disparu ou étant devenu privé. Une adresse dont on sait qu'elle ne répond pas
+ne vaut pas mieux que pas d'adresse, et elle coûte une requête à chaque
+lancement.
 
 La normalisation s'écrit toujours de la même façon dans le code : l'entrée passe
 par `x / 255`, puis `(x - moyenne) / ecart`. `(0.5, 0.5)` redonne
@@ -136,6 +147,7 @@ par `x / 255`, puis `(x - moyenne) / ecart`. `(0.5, 0.5)` redonne
 
 | Constante | Valeur | Nature | Rôle |
 | --- | --- | --- | --- |
+| `YUNET_COTE_MAX` | 1024 | déclarée | Plus grand côté auquel l'image est réduite avant d'être donnée à YuNet, dont le coût croît avec la taille d'entrée. Les boîtes rendues sont ensuite remises à l'échelle de l'image d'origine — conversion couverte par un test géométrique sur le vrai modèle, et par une mutation. |
 | `TAILLE_ENTREE_DETECTION` | 640 | déclarée | Côté de l'entrée du détecteur. L'image y est mise en lettre-boîte, et les coordonnées font le chemin inverse ensuite. |
 | `SCORE_MIN_VISAGE` | 0.35 | déclarée | Plancher de confiance. Volontairement bas : un visage manquant est invisible — l'utilisateur ne sait pas qu'il aurait dû être traité — alors qu'une zone superflue se corrige en supprimant le calque. |
 | `NMS_RECOUVREMENT_MAX` | 0.45 | déclarée | Au-delà de ce recouvrement, deux boîtes désignent le même visage. |

@@ -205,6 +205,13 @@ PAUSE_ENTRE_MODELES_S = 0.5
 
 # --- Detection des visages ----------------------------------------------------
 TAILLE_ENTREE_DETECTION = 640
+# YuNet accepte n'importe quelle taille d'entree, mais son cout croit avec
+# elle : une photo de douze megapixels y passerait entiere. L'image est donc
+# reduite pour que son plus grand cote n'excede pas cette valeur, et les boites
+# rendues sont remises a l'echelle de l'image d'origine. C'est une conversion
+# de coordonnees de plus, donc une erreur possible de plus : elle est couverte
+# par un test geometrique sur le vrai modele.
+YUNET_COTE_MAX = 1024
 SCORE_MIN_VISAGE = 0.35
 NMS_RECOUVREMENT_MAX = 0.45
 VISAGES_MAX = 32
@@ -297,18 +304,50 @@ MARQUEURS_WORKER = (
 FICHIER_SOURCES_UTILISATEUR = "sources_modeles.json"
 
 ROLE_DETECTION = "detection"
+ROLE_DETECTION_YUNET = "detection_yunet"
 ROLE_SOURIRE = "sourire"
 ROLE_AMELIORATION = "amelioration"
 ROLE_COLORISATION = "colorisation"
 
 MODELES = {
+    # Detecteur par defaut : YuNet, du zoo de modeles d'OpenCV. 227 Ko, licence
+    # Apache-2.0, et surtout OpenCV sait le piloter lui-meme par
+    # cv2.FaceDetectorYN - il n'y a donc ni mise en lettre-boite ni decodage de
+    # sortie a ecrire, c'est-a-dire ni l'un ni l'autre a se tromper.
+    #
+    # L'adresse et la taille de ce modele sont MESUREES : le fichier a ete
+    # telecharge et charge par OpenCV 4.14 depuis ce depot le 2026-09-17.
+    # C'est le seul modele de cette table dont ce soit le cas, et c'est
+    # pourquoi c'est le seul que le greffon va chercher de lui-meme.
+    #
+    # Attention a l'adresse : raw.githubusercontent.com ne rend que le
+    # pointeur Git LFS de 131 octets, que le controle de vraisemblance rejette
+    # a juste titre. C'est media.githubusercontent.com qui sert le contenu.
+    ROLE_DETECTION_YUNET: {
+        "fichier": "face_detection_yunet_2023mar.onnx",
+        "taille_declaree": 232589,
+        "taille_min": 100 * 1024,
+        "source_verifiee": True,
+        "sources": [
+            "https://media.githubusercontent.com/media/opencv/opencv_zoo/main/"
+            "models/face_detection_yunet/face_detection_yunet_2023mar.onnx",
+        ],
+        "taille_entree": YUNET_COTE_MAX,
+        "normalisation": [0.0, 1.0],
+        "espace": "BGR",
+    },
+    # Detecteur alternatif. Aucune adresse n'est declaree : les deux qui
+    # figuraient ici renvoyaient HTTP 401 chez l'utilisateur, le depot ayant
+    # disparu ou etant devenu prive. Une adresse dont on sait qu'elle ne
+    # repond pas ne vaut pas mieux que pas d'adresse du tout, et elle coute
+    # une requete a chaque lancement. Ce modele s'obtient donc par depot
+    # manuel, ou par une adresse declaree dans sources_modeles.json - et il
+    # passe alors devant YuNet, parce qu'un fichier depose l'a ete
+    # deliberement.
     ROLE_DETECTION: {
         "fichier": "yolov8n-face.onnx",
         "taille_declaree": 13 * 1024 * 1024,
-        "sources": [
-            "https://huggingface.co/AdamCodd/YOLOv8n-face-detection/resolve/main/model.onnx",
-            "https://huggingface.co/Xenova/yolov8n-face/resolve/main/onnx/model.onnx",
-        ],
+        "sources": [],
         "taille_entree": TAILLE_ENTREE_DETECTION,
         "normalisation": [0.0, 1.0],
         "espace": "RGB",
@@ -344,7 +383,8 @@ MODELES = {
 # Roles dont l'absence se rattrape par un chemin sans IA, et roles dont
 # l'absence annule simplement l'operation. La distinction gouverne le message
 # affiche : un repli s'annonce, une operation annulee s'explique.
-ROLES_AVEC_REPLI = (ROLE_DETECTION, ROLE_AMELIORATION)
+ROLES_AVEC_REPLI = (ROLE_DETECTION, ROLE_DETECTION_YUNET,
+                    ROLE_AMELIORATION)
 
 # Vecteur d'attributs du modele de sourire. Sa taille et l'indice de
 # l'attribut "sourire" dependent de l'export : ils sont transmis au worker,
@@ -363,6 +403,32 @@ FOURNISSEURS_GPU = [
     "CPUExecutionProvider",
 ]
 FOURNISSEURS_CPU = ["CPUExecutionProvider"]
+
+
+def annonce_cout(role):
+    """Ce que coute reellement une option, derive de la table des modeles.
+
+    Un libelle ecrit a la main derive : celui du sourire annoncait "environ
+    150 Mo telecharges au premier usage" alors qu'aucune adresse n'etait
+    declaree pour ce modele - la case promettait donc un telechargement que le
+    code ne pouvait pas faire, et l'utilisateur ne l'apprenait qu'apres coup.
+    Le libelle se calcule ici, a partir de la seule chose qui fasse foi : la
+    presence ou non d'une source.
+    """
+    entree = MODELES[role]
+    taille = octets_lisibles(entree.get("taille_declaree", 0))
+    if not entree["sources"]:
+        return ("modele a fournir : deposez %s dans le dossier des modeles, le "
+                "greffon n'a pas d'adresse pour le telecharger"
+                % entree["fichier"])
+    if entree.get("source_verifiee"):
+        return "environ %s telecharges au premier usage" % taille
+    # Distinguer ce qui est mesure de ce qui est declare, jusque dans
+    # l'interface : une adresse que personne n'a jointe depuis ce depot ne
+    # doit pas etre annoncee comme un telechargement acquis.
+    return ("telechargement d'environ %s tente au premier usage ; l'adresse "
+            "n'a pas ete verifiee, et le greffon degrade si elle ne repond pas"
+            % taille)
 
 
 def octets_lisibles(n):
@@ -1698,14 +1764,29 @@ def fichier_semble_onnx(chemin):
     return True, "protobuf ONNX plausible"
 
 
+def taille_min_modele(nom_fichier):
+    """Plancher de vraisemblance, par modele.
+
+    Un plancher unique pour toute la table serait une hypothese sur la taille
+    des modeles : YuNet pese 227 Ko la ou les autres pesent des centaines de
+    megaoctets, et un plancher a un megaoctet le rejetterait purement et
+    simplement.
+    """
+    for entree in MODELES.values():
+        if entree["fichier"] == nom_fichier:
+            return int(entree.get("taille_min") or MODELE_TAILLE_MIN_BYTES)
+    return MODELE_TAILLE_MIN_BYTES
+
+
 def controler_vraisemblance(chemin, nom_fichier):
     """Controle de taille en amont du hash : un fichier nul, tronque ou
     aberrant est rejete avant meme d'etre lu integralement."""
     taille = os.path.getsize(chemin)
-    if taille < MODELE_TAILLE_MIN_BYTES:
+    plancher = taille_min_modele(nom_fichier)
+    if taille < plancher:
         raise ValueError("Le fichier '%s' est tronque (%s, minimum attendu %s)."
                          % (nom_fichier, octets_lisibles(taille),
-                            octets_lisibles(MODELE_TAILLE_MIN_BYTES)))
+                            octets_lisibles(plancher)))
     if taille > MODELE_TAILLE_MAX_BYTES:
         raise ValueError("Le fichier '%s' depasse la taille vraisemblable d'un "
                          "modele de cette suite (%s)."
@@ -1795,6 +1876,27 @@ def tofu(nom_fichier, digest, avertissements):
             json.dump(connues, f, indent=2)
     except Exception:
         pass
+
+
+def motif_reseau(erreur):
+    """Traduit un echec reseau en une phrase qui oriente l'utilisateur.
+
+    "HTTP Error 401: Unauthorized" ne dit rien a qui veut simplement un
+    modele. Un 401 ou un 403 sur un depot public signifie, neuf fois sur dix,
+    que le depot a disparu ou est devenu prive - pas que le reseau est coupe,
+    et donc pas qu'il faut reessayer plus tard.
+    """
+    code = getattr(erreur, "code", None)
+    if code in (401, 403):
+        return ("cette adresse demande une authentification ou n'existe plus "
+                "(HTTP %s)" % code)
+    if code == 404:
+        return "cette adresse n'existe plus (HTTP 404)"
+    if code == 429:
+        return "le serveur refuse temporairement les telechargements (HTTP 429)"
+    if isinstance(code, int) and code >= 500:
+        return "le serveur est en panne (HTTP %s)" % code
+    return premiere_phrase(str(erreur))
 
 
 def taille_distante(url):
@@ -1905,7 +2007,7 @@ def telecharger_modele(role, progression):
         try:
             return _telecharger_url(url, nom_fichier, reference, progression)
         except Exception as e:
-            echecs.append("%s : %s" % (url, premiere_phrase(str(e))))
+            echecs.append("%s : %s" % (url, motif_reseau(e)))
             journal("source en echec %s : %s" % (url, e))
     raise RuntimeError("RAISON: aucune source n'a fourni '%s' (%s)."
                        % (nom_fichier, " | ".join(echecs)[:400]))
@@ -2047,7 +2149,19 @@ def message_depot_manuel(roles, entete=None):
     lignes.append("")
     lignes.append("Un autre export ONNX du meme modele convient s'il respecte "
                   "ce format d'entree.")
+    lignes.append("")
+    lignes.append("Une adresse de telechargement peut aussi etre declaree dans "
+                  "ce fichier :")
+    lignes.append("  " + get_sources_utilisateur_path())
+    lignes.append("  Exemple : {\"%s\": [\"https://exemple.org/%s\"]}"
+                  % (roles[0], MODELES[roles[0]]["fichier"]))
     return "\n".join(lignes)
+
+
+# Roles qui servent la meme capacite. Si l'un repond, l'absence de l'autre
+# n'est pas une degradation et ne merite aucun message : deux detecteurs pour
+# une seule detection.
+ROLES_ALTERNATIFS = ((ROLE_DETECTION, ROLE_DETECTION_YUNET),)
 
 
 def resoudre_modeles(roles, autoriser_telechargement, progression, avertissements):
@@ -2055,35 +2169,47 @@ def resoudre_modeles(roles, autoriser_telechargement, progression, avertissement
 
     Un modele indisponible degrade : l'operation passe sur son chemin sans IA
     quand il en existe un, ou elle est annulee et le motif est dit en une
-    phrase. Le message de depot manuel n'apparait qu'en dernier recours, quand
-    plus rien n'est possible - c'est-a-dire quand aucun role demande n'a pu
-    etre servi et qu'aucun ne dispose d'un repli.
+    phrase.
+
+    Et le message dit comment y remedier. Diagnostiquer une absence n'est pas
+    la reparer : constater qu'un modele manque sans indiquer ni ou le deposer
+    ni comment en declarer l'adresse oblige l'utilisateur a quitter GIMP pour
+    chercher, ce qui est exactement ce que ce greffon ne doit jamais demander.
     """
     resolus = {}
-    manquants = []
+    motifs = {}
     for role in roles:
         progression("Verification du modele %s..." % MODELES[role]["fichier"])
         try:
             resolus[role] = obtenir_modele(role, autoriser_telechargement,
                                            progression, avertissements)
         except Exception as e:
-            motif = premiere_phrase(str(e))
             resolus[role] = None
-            manquants.append(role)
-            journal("modele %s indisponible : %s" % (role, motif))
-            if role in ROLES_AVEC_REPLI:
-                avertissements.append(
-                    "Modele '%s' indisponible (%s) : l'etape %s se fait sans IA."
-                    % (MODELES[role]["fichier"], motif, role))
-            else:
-                avertissements.append(
-                    "Modele '%s' indisponible (%s) : l'etape %s a ete ignoree."
-                    % (MODELES[role]["fichier"], motif, role))
-    if manquants and all(role not in ROLES_AVEC_REPLI for role in roles):
+            motifs[role] = premiere_phrase(str(e))
+            journal("modele %s indisponible : %s" % (role, motifs[role]))
+
+    couverts = set()
+    for groupe in ROLES_ALTERNATIFS:
+        if any(resolus.get(autre) for autre in groupe):
+            couverts.update(groupe)
+
+    manquants = [role for role in roles
+                 if resolus.get(role) is None and role not in couverts]
+    for role in manquants:
+        if role in ROLES_AVEC_REPLI:
+            avertissements.append(
+                "Modele '%s' indisponible (%s) : l'etape %s se fait sans IA."
+                % (MODELES[role]["fichier"], motifs.get(role, "motif inconnu"),
+                   role))
+        else:
+            avertissements.append(
+                "Modele '%s' indisponible (%s) : l'etape %s a ete ignoree."
+                % (MODELES[role]["fichier"], motifs.get(role, "motif inconnu"),
+                   role))
+    if manquants:
         avertissements.append(message_depot_manuel(
             manquants,
-            "Aucun des modeles necessaires n'a pu etre obtenu ; les etapes "
-            "concernees ont ete ignorees."))
+            "Voici comment fournir le ou les modeles manquants."))
     return resolus
 
 
@@ -3001,6 +3127,76 @@ def filtrer_visages(boites, scores, cfg, largeur, hauteur, roi, np, notes):
     return [item[0] for item in retenus], [item[1] for item in retenus]
 
 
+def detecter_visages_yunet(pivot, chemin, cfg, np, cv2, notes):
+    """Detection par YuNet, pilotee par cv2.FaceDetectorYN.
+
+    OpenCV fait lui-meme le pretraitement et le decodage : il n'y a donc ni
+    mise en lettre-boite ni lecture de sortie brute a ecrire ici, c'est-a-dire
+    ni l'un ni l'autre a se tromper. Restent deux contrats a respecter, et ce
+    sont les deux seuls endroits ou ce chemin peut echouer en silence :
+
+    - l'entree se donne en BGR, alors que le pivot est en RGB. Une inversion
+      ne leve rien : elle fait baisser le score et deplace legerement la boite.
+      Le banc de test ne sait pas la distinguer, et le dit.
+    - l'image est reduite avant detection, donc les boites rendues sont dans
+      l'espace reduit. Les remettre a l'echelle est indispensable, et cette
+      conversion-la est couverte par un test geometrique sur le vrai modele.
+    """
+    hauteur, largeur = pivot.shape[:2]
+    cote_max = max(64, int(cfg["yunet_cote_max"]))
+    echelle = min(1.0, float(cote_max) / float(max(hauteur, largeur)))
+    lt = max(1, int(round(largeur * echelle)))
+    ht = max(1, int(round(hauteur * echelle)))
+    if echelle < 1.0:
+        reduit = cv2.resize(pivot, (lt, ht), interpolation=cv2.INTER_AREA)
+    else:
+        reduit = pivot
+    bgr = cv2.cvtColor(reduit, cv2.COLOR_RGB2BGR)
+
+    fabrique = getattr(cv2, "FaceDetectorYN", None)
+    creer = getattr(fabrique, "create", None) if fabrique else None
+    if creer is None:
+        creer = getattr(cv2, "FaceDetectorYN_create", None)
+    if creer is None:
+        raise ErreurModele("cette version d'OpenCV n'expose pas FaceDetectorYN")
+
+    detecteur = creer(chemin, "", (lt, ht), float(cfg["score_min_visage"]),
+                      float(cfg["nms_recouvrement_max"]),
+                      max(1, int(cfg["visages_max"])))
+    try:
+        detecteur.setInputSize((lt, ht))
+        try:
+            _, trouves = detecteur.detect(bgr)
+        except MemoryError:
+            raise
+        except Exception as e:
+            raise ErreurInference("calcul refuse par le moteur: " + str(e))
+    finally:
+        detecteur = None
+        purger_memoire(float(cfg["pause_entre_modeles_s"]))
+
+    boites = []
+    scores = []
+    if trouves is None:
+        return boites, scores
+    for ligne in np.asarray(trouves, dtype=np.float32):
+        if ligne.shape[0] < 4:
+            continue
+        # Retour vers l'espace de l'image d'origine. L'oublier placerait le
+        # traitement sur le quart superieur gauche de toute grande photo.
+        bx = max(0.0, float(ligne[0]) / echelle)
+        by = max(0.0, float(ligne[1]) / echelle)
+        bl = min(float(ligne[2]) / echelle, largeur - bx)
+        bh = min(float(ligne[3]) / echelle, hauteur - by)
+        if bl <= 1.0 or bh <= 1.0:
+            continue
+        boites.append([bx, by, bl, bh])
+        scores.append(float(ligne[14]) if ligne.shape[0] > 14 else 0.0)
+    notes.append("YuNet a examine l'image en %dx%d (facteur %.3f)"
+                 % (lt, ht, echelle))
+    return boites, scores
+
+
 def detecter_visages(pivot, cfg, modele, fournisseurs, np, cv2, notes):
     """Retourne (boites, scores, moteur, fournisseur).
 
@@ -3013,6 +3209,10 @@ def detecter_visages(pivot, cfg, modele, fournisseurs, np, cv2, notes):
     hauteur, largeur = pivot.shape[:2]
     roi = cfg.get("roi_visages") or None
 
+    # Un modele YOLO present sur le disque l'a ete deliberement : le greffon ne
+    # va jamais le chercher de lui-meme. Il passe donc devant YuNet, qu'il
+    # telecharge. Un choix explicite ne se satisfait pas d'un substitut
+    # silencieux.
     if modele:
         try:
             import onnxruntime as ort
@@ -3043,13 +3243,32 @@ def detecter_visages(pivot, cfg, modele, fournisseurs, np, cv2, notes):
             if boites:
                 return boites, scores, os.path.basename(modele), fournisseur
             notes.append("le modele de detection n'a trouve aucun visage, "
-                         "essai de la cascade de Haar")
+                         "essai du detecteur suivant")
         except MemoryError:
             raise
         except Exception as e:
             genre = noter_echec("detection", e)
-            notes.append("detection ONNX en echec (%s: %s), repli sur la "
-                         "cascade de Haar" % (genre, str(e)[:200]))
+            notes.append("detection ONNX en echec (%s: %s), passage au "
+                         "detecteur suivant" % (genre, str(e)[:200]))
+
+    chemin_yunet = cfg["modeles"].get("detection_yunet")
+    if chemin_yunet:
+        try:
+            boites, scores = detecter_visages_yunet(pivot, chemin_yunet, cfg,
+                                                    np, cv2, notes)
+            boites, scores = filtrer_visages(boites, scores, cfg, largeur,
+                                             hauteur, roi, np, notes)
+            if boites:
+                return (boites, scores, os.path.basename(chemin_yunet),
+                        "processeur")
+            notes.append("YuNet n'a trouve aucun visage, essai de la cascade "
+                         "de Haar")
+        except MemoryError:
+            raise
+        except Exception as e:
+            genre = noter_echec("detection_yunet", e)
+            notes.append("YuNet en echec (%s: %s), repli sur la cascade de "
+                         "Haar" % (genre, str(e)[:200]))
 
     cascade, detail = detecteur_haar(cv2)
     if cascade is not None:
@@ -3728,6 +3947,9 @@ def roles_necessaires(operations):
     """
     roles = []
     if any(op in ("anonymiser", "sourire", "ameliorer") for op in operations):
+        # Les deux detecteurs sont resolus : YuNet est celui que le greffon
+        # sait aller chercher, l'autre n'est utilise que s'il est deja la.
+        roles.append(ROLE_DETECTION_YUNET)
         roles.append(ROLE_DETECTION)
     if "sourire" in operations:
         roles.append(ROLE_SOURIRE)
@@ -3851,24 +4073,13 @@ class IaVisageStudioPlugin(Gimp.PlugIn):
              "necessaire pour cette etape. Prioritaire : elle annule le "
              "sourire et l'amelioration.", False),
             ("smile", "Faire sourire les visages",
-             "Modifie l'expression (modele %s, environ %s telecharges au "
-             "premier usage)." % (MODELES[ROLE_SOURIRE]["fichier"],
-                                  octets_lisibles(
-                                      MODELES[ROLE_SOURIRE]["taille_declaree"])),
-             False),
+             "Modifie l'expression (%s)." % annonce_cout(ROLE_SOURIRE), False),
             ("enhance", "Ameliorer les visages",
-             "Restauration des details (modele %s, environ %s telecharges au "
-             "premier usage). Sans ce modele, un rehaussement sans IA est "
-             "applique." % (MODELES[ROLE_AMELIORATION]["fichier"],
-                            octets_lisibles(
-                                MODELES[ROLE_AMELIORATION]["taille_declaree"])),
-             False),
+             "Restauration des details (%s). Sans ce modele, un rehaussement "
+             "sans IA est applique." % annonce_cout(ROLE_AMELIORATION), False),
             ("colorize", "Coloriser l'image",
-             "Colorise toute l'image en conservant sa luminance (modele %s, "
-             "environ %s telecharges au premier usage)."
-             % (MODELES[ROLE_COLORISATION]["fichier"],
-                octets_lisibles(MODELES[ROLE_COLORISATION]["taille_declaree"])),
-             False),
+             "Colorise toute l'image en conservant sa luminance (%s)."
+             % annonce_cout(ROLE_COLORISATION), False),
             ("allow-download", "Telecharger les modeles manquants",
              "Telechargement automatique sous %s par fichier, taille annoncee "
              "avant de commencer." % octets_lisibles(AUTO_DOWNLOAD_MAX_BYTES),
@@ -4032,6 +4243,7 @@ class IaVisageStudioPlugin(Gimp.PlugIn):
                 "pivot_type": PIVOT_TYPE,
                 "pause_entre_modeles_s": PAUSE_ENTRE_MODELES_S,
                 "taille_entree_detection": MODELES[ROLE_DETECTION]["taille_entree"],
+                "yunet_cote_max": YUNET_COTE_MAX,
                 "detection_normalisation": MODELES[ROLE_DETECTION]["normalisation"],
                 "detection_nombre_classes": 1,
                 "score_min_visage": SCORE_MIN_VISAGE,
@@ -4224,7 +4436,7 @@ class IaVisageStudioPlugin(Gimp.PlugIn):
         modele = None
         taille = 64
         for role in (ROLE_DETECTION, ROLE_SOURIRE, ROLE_AMELIORATION,
-                     ROLE_COLORISATION):
+                     ROLE_COLORISATION, ROLE_DETECTION_YUNET):
             if modeles.get(role):
                 modele = modeles[role]
                 taille = MODELES[role]["taille_entree"]
