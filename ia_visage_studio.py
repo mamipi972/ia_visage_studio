@@ -31,6 +31,7 @@ import shutil
 import hashlib
 import tempfile
 import subprocess
+import re
 
 # Constantes necessaires avant le chargement de l'API, pour pouvoir ecrire un
 # journal meme si ce chargement echoue.
@@ -111,7 +112,7 @@ if os.name == "nt":
 #    Toute valeur citee dans la documentation vient d'ici (voir
 #    TABLE_DES_VALEURS.md), et outils/verifier_livraison.py compare les deux.
 # ==============================================================================
-PLUGIN_VERSION = "1.1"
+PLUGIN_VERSION = "1.2"
 PROCEDURE_NAME = "plug-in-ia-visage-studio"
 
 # --- Piles techniques ---------------------------------------------------------
@@ -136,12 +137,22 @@ PAQUETS_COMMUNS = [
     "opencv-python-headless>=4.8.0,<5",
 ]
 REQUIRED_PACKAGES = PAQUETS_COMMUNS + ["onnxruntime>=1.16.0,<2"]
-REQUIRED_PACKAGES_GPU = PAQUETS_COMMUNS + ["onnxruntime-gpu>=1.16.0,<2"]
+# Les extras ne sont pas du confort : ils sont la seule facon de ne pas
+# deviner. onnxruntime-gpu n'est pas bati contre "CUDA" mais contre une
+# branche precise, et elle change - les versions 1.21 a 1.26 reclament du
+# CUDA 12, la 1.30 du CUDA 13. Le greffon ne peut pas savoir laquelle pip
+# retiendra sur un poste donne ; onnxruntime, lui, la declare. Demander
+# [cuda,cudnn] laisse pip installer la branche qui correspond a la roue qu'il
+# vient de choisir, et rend le greffon juste sans le modifier a la bascule
+# suivante. Une version qui ne declare pas ces extras se contente d'un
+# avertissement pip et s'installe quand meme : rien n'est bloque.
+REQUIRED_PACKAGES_GPU = PAQUETS_COMMUNS + ["onnxruntime-gpu[cuda,cudnn]>=1.16.0,<2"]
 
-# Paquets pip de cuDNN, tentes dans cet ordre quand la pile GPU est demandee.
-# Une dependance systeme que l'utilisateur ne peut pas installer sans quitter
-# le greffon existe souvent sous forme de roue publiee par le meme editeur :
-# la tenter ne coute rien, et son echec n'est jamais bloquant.
+# Repli pour les roues anterieures a 1.21, seules a ne declarer aucun extra.
+# Elles sont toutes de branche CUDA 12 ou 11, d'ou ces deux noms. Ce repli ne
+# s'execute QUE si aucune roue cuDNN n'est deja presente : poser du cuDNN pour
+# CUDA 12 a cote d'un onnxruntime bati pour CUDA 13 melangerait deux branches
+# dans le meme dossier nvidia/cudnn, ce qui est pire que de n'en avoir aucune.
 PAQUETS_CUDNN = ["nvidia-cudnn-cu12", "nvidia-cudnn-cu11"]
 
 # Bornes de version de l'interpreteur. Le plancher est impose par les roues des
@@ -1594,6 +1605,32 @@ def valider_acceleration(python_venv, env, modele, taille_entree, dossier_travai
     return constat
 
 
+# Sequences de mise en forme ANSI. onnxruntime colore sa sortie d'erreur ; sur
+# un terminal cela se voit, dans une fenetre GTK cela donne "[1;31m" colle au
+# message. Ces caracteres consommaient aussi une part du budget de la ligne,
+# et c'est la fin de la ligne qui porte le diagnostic.
+_ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]|\[[0-9];[0-9]{2}m|\[[0-9]+m")
+
+# Preambule des lignes d'onnxruntime : horodatage, puis [W:onnxruntime:...,
+# fichier.cc:1234 fonction]. Rien de tout cela ne dit quoi que ce soit a qui
+# lit la fenetre, et cela occupait les deux tiers de la ligne.
+_PREAMBULE_MOTEUR = re.compile(
+    r"^\s*[-0-9:. ]*\[[A-Z]:onnxruntime[^\]]*\]\s*")
+
+# Assez long pour que "Require cuDNN 9.* and CUDA 12.*" tienne en entier une
+# fois le preambule retire. La version precedente coupait a 220 caracteres
+# preambule compris, et tranchait juste avant le numero de version - soit
+# exactement le mot qui aurait permis de comprendre.
+LONGUEUR_LIGNE_MOTEUR = 300
+
+
+def message_du_moteur(ligne):
+    """La ligne du moteur debarrassee de ce qui n'informe pas."""
+    ligne = _ANSI.sub("", ligne or "")
+    ligne = _PREAMBULE_MOTEUR.sub("", ligne)
+    return ligne.strip()
+
+
 def lignes_diagnostic_moteur(journal_texte):
     """Ce que le moteur a dit lui-meme de son chargement de fournisseur.
 
@@ -1607,10 +1644,24 @@ def lignes_diagnostic_moteur(journal_texte):
         bas = ligne.lower()
         if any(mot in bas for mot in ("cuda", "cudnn", "provider", "libonnxruntime",
                                       "tensorrt", "rocm", "directml")):
-            ligne = ligne.strip()
+            ligne = message_du_moteur(ligne)
             if ligne and ligne not in interessantes:
-                interessantes.append(ligne[:220])
+                interessantes.append(ligne[:LONGUEUR_LIGNE_MOTEUR])
     return interessantes[-4:]
+
+
+def cudnn_deja_installe(python_venv):
+    """Nom du dossier cuDNN present dans le venv, ou une chaine vide.
+
+    Les extras d'onnxruntime-gpu amenent la branche cuDNN qui correspond a la
+    roue retenue. Reinstaller ensuite une autre branche par precaution la
+    remplacerait dans le meme dossier : la precaution ferait le degat.
+    """
+    for dossier in dossiers_dll_paquets(python_venv):
+        morceaux = dossier.replace("\\", "/").lower().split("/")
+        if "cudnn" in morceaux:
+            return dossier
+    return ""
 
 
 def installer_cudnn(python_venv, env, dossier_travail, progression):
@@ -1620,6 +1671,11 @@ def installer_cudnn(python_venv, env, dossier_travail, progression):
     sans quitter le greffon existe souvent sous forme de paquet pip publie par
     le meme editeur. Le repli absorbe le cas ou aucune ne convient.
     """
+    deja = cudnn_deja_installe(python_venv)
+    if deja:
+        journal("cuDNN deja fourni par la roue onnxruntime-gpu: " + deja)
+        return True, deja
+
     log = os.path.join(dossier_travail, "pip_cudnn.log")
     for paquet in PAQUETS_CUDNN:
         progression("Installation de %s..." % paquet)
@@ -1852,8 +1908,10 @@ INDICES_CAUSE = (
      "fournisseur en particulier. C'est un defaut du greffon, pas de ce "
      "poste : signalez ce message."),
     (("cudnn",),
-     "cuDNN est en cause : absent, introuvable sur le PATH, ou d'une version "
-     "majeure differente de celle qu'attend cette version d'onnxruntime-gpu."),
+     "La paire CUDA/cuDNN attendue par cette roue onnxruntime-gpu n'est pas "
+     "celle que le poste expose. Le greffon demande desormais a onnxruntime "
+     "lui-meme quelle branche il lui faut : cochez \"Reinstaller "
+     "l'environnement IA\" pour que l'environnement soit refait avec elle."),
     (("failed to load library", "loadlibrary", "cannot open shared object"),
      "Une bibliotheque du fournisseur GPU n'a pas pu etre chargee. La ligne "
      "ci-dessus la nomme."),
@@ -1862,8 +1920,42 @@ INDICES_CAUSE = (
 )
 
 
-def cause_probable(constat):
+# "Require cuDNN 9.* and CUDA 12.*" : la branche que la roue reclame. Et
+# "CUDA\\v13.3" dans CUDA_PATH : celle que le poste installe.
+_MOTIF_CUDA_EXIGE = re.compile(r"cuda\s+(\d+)\s*\.\s*\*", re.IGNORECASE)
+_MOTIF_CUDA_POSTE = re.compile(r"cuda[\\/]v(\d+)\.", re.IGNORECASE)
+
+
+def desaccord_cuda(constat, detail_runtime):
+    """Les deux majeures de CUDA, quand le moteur et le poste les nomment.
+
+    Le moteur dit ce qu'il exige, la variable CUDA_PATH dit ce qui est
+    installe : quand les deux sont lisibles et different, la cause n'est plus
+    une hypothese, c'est une soustraction. La dire evite de faire chercher du
+    cote de cuDNN, que le message d'onnxruntime nomme en premier alors qu'il
+    est rarement le fautif.
+    """
+    texte = " ".join(constat.get("journal") or []) + " " + str(constat.get("detail", ""))
+    exige = _MOTIF_CUDA_EXIGE.search(texte)
+    poste = _MOTIF_CUDA_POSTE.search(detail_runtime or "")
+    if not exige or not poste:
+        return None
+    if exige.group(1) == poste.group(1):
+        return None
+    return (exige.group(1), poste.group(1))
+
+
+def cause_probable(constat, detail_runtime=""):
     """Une phrase de cause, appuyee sur ce que le moteur a reellement dit."""
+    ecart = desaccord_cuda(constat, detail_runtime)
+    if ecart:
+        return ("Les deux couches ne parlent pas de la meme version de CUDA : "
+                "la roue onnxruntime-gpu installee reclame CUDA %s, ce poste "
+                "expose CUDA %s. cuDNN, que le moteur nomme en premier, n'y "
+                "est pour rien. Cochez \"Reinstaller l'environnement IA\" : "
+                "l'environnement embarquera alors les bibliotheques CUDA %s "
+                "dont cette roue a besoin, sans toucher a votre installation "
+                "systeme." % (ecart[0], ecart[1], ecart[0]))
     texte = " ".join(constat.get("journal") or []).lower()
     texte += " " + str(constat.get("detail", "")).lower()
     for motifs, phrase in INDICES_CAUSE:
@@ -1902,7 +1994,7 @@ def message_acceleration_ecartee(constat, memorise=False):
         lignes.append("  Moteur : " + ligne)
     if constat.get("detail"):
         lignes.append("  Detail : " + premiere_phrase(str(constat["detail"])))
-    lignes.append(cause_probable(constat))
+    lignes.append(cause_probable(constat, detail_runtime))
     lignes.append("Le traitement se poursuit sur le processeur : meme "
                   "resultat, seulement plus lent.")
     dossier = os.path.join(get_data_dir(), nom_venv(STACK_GPU))
@@ -1926,9 +2018,11 @@ def refus_gpu(detail):
         "telechargement : ce poste n'expose pas le runtime CUDA dont la pile "
         "onnxruntime-gpu a besoin.\n"
         "Constat : %s\n"
-        "onnxruntime-gpu n'embarque pas son runtime, contrairement aux roues "
-        "de PyTorch : un pilote graphique ne suffit pas, il faut le CUDA "
-        "Toolkit.\n"
+        "Les bibliotheques CUDA, elles, viennent avec l'environnement : le "
+        "greffon les demande a onnxruntime plutot que de compter sur celles "
+        "du poste. Ce qu'il exige ici, c'est la preuve que la machine est "
+        "reellement equipee - sans quoi il engagerait plusieurs gigaoctets de "
+        "telechargement pour retomber sur le processeur.\n"
         "Le traitement se poursuit sur le processeur, ce qui donne le meme "
         "resultat, seulement plus lentement." % detail)
 

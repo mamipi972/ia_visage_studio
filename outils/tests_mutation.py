@@ -200,6 +200,60 @@ MUTATIONS_WORKER = [
 # ---------------------------------------------------------------------------
 MUTATIONS_GREFFON = [
     {
+        "nom": "la pile GPU redevient un nom de paquet sans extras",
+        "pourquoi": "la branche CUDA serait a nouveau devinee : juste tant que "
+                    "les roues restent en CUDA 12, fausse des la bascule en "
+                    "CUDA 13, et sans que rien ne le signale",
+        "remplacements": [(
+            "\"onnxruntime-gpu[cuda,cudnn]>=1.16.0,<2\"",
+            "\"onnxruntime-gpu>=1.16.0,<2\"")],
+        "tests": ["test_pile_gpu_demande_sa_branche_cuda"],
+        "rouges": ["la pile GPU reclame les extras cuda et cudnn"],
+    },
+    {
+        "nom": "le repli cuDNN reinstalle par-dessus la branche deja posee",
+        "pourquoi": "poser du cuDNN pour CUDA 12 a cote d'un onnxruntime bati "
+                    "pour CUDA 13 melange deux branches dans le meme dossier "
+                    "nvidia/cudnn : la precaution fait le degat",
+        "remplacements": [(
+            "    for dossier in dossiers_dll_paquets(python_venv):\n"
+            "        morceaux = dossier.replace(\"\\\\\", \"/\").lower().split(\"/\")\n"
+            "        if \"cudnn\" in morceaux:\n"
+            "            return dossier\n",
+            "")],
+        "tests": ["test_pile_gpu_demande_sa_branche_cuda"],
+        "rouges": ["une branche cuDNN deja posee est reconnue"],
+    },
+    {
+        "nom": "le desaccord de version CUDA n'est plus etabli",
+        "pourquoi": "le message retombe sur la premiere piste que nomme "
+                    "onnxruntime, cuDNN, et envoie chercher du cote de la "
+                    "seule couche qui etait en place",
+        "remplacements": [(
+            "    ecart = desaccord_cuda(constat, detail_runtime)\n"
+            "    if ecart:\n",
+            "    ecart = None\n"
+            "    if ecart:\n")],
+        "tests": ["test_cause_probable"],
+        "rouges": ["le desaccord de majeure CUDA passe devant la piste cuDNN",
+                   "et il disculpe explicitement cuDNN"],
+    },
+    {
+        "nom": "la trace du moteur repart brute, preambule et couleurs compris",
+        "pourquoi": "l'horodatage, le nom de fichier C++ et la sequence ANSI "
+                    "consomment le budget de la ligne, et la coupe tombe "
+                    "exactement sur le numero de version qui fait le "
+                    "diagnostic",
+        "remplacements": [(
+            "            ligne = message_du_moteur(ligne)\n",
+            "            ligne = ligne.strip()\n"),
+            ("LONGUEUR_LIGNE_MOTEUR = 300", "LONGUEUR_LIGNE_MOTEUR = 220")],
+        "tests": ["test_lignes_du_moteur"],
+        "rouges": ["aucune sequence ANSI ne subsiste",
+                   "l'horodatage et le nom de fichier C++ sont retires",
+                   "la version de CUDA exigee survit a la troncature"],
+    },
+    {
         "nom": "le libelle ignore le convertisseur declare",
         "pourquoi": "la case annoncerait un modele a fournir alors que le "
                     "depot livre de quoi le fabriquer : l'utilisateur "

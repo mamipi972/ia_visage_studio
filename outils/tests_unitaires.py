@@ -715,6 +715,118 @@ def test_cause_probable():
         controler("sans indice, le message ne suppose rien",
                   "n'en dit pas la raison" in module.cause_probable(muet),
                   module.cause_probable(muet))
+
+        # Releve sur le poste de l'utilisateur le 2026-09-17 : onnxruntime
+        # nomme cuDNN en premier, mais c'est la majeure de CUDA qui differe.
+        # S'arreter au premier mot reconnu envoyait chercher du cote de cuDNN,
+        # qui etait en place.
+        desaccord = {"disponibles": ["CUDAExecutionProvider", "CPUExecutionProvider"],
+                     "journal": ["Failed to create CUDAExecutionProvider. "
+                                 "Require cuDNN 9.* and CUDA 12.*, and the "
+                                 "latest MSVC runtime."]}
+        poste13 = "CUDA_PATH=C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v13.3"
+        phrase = module.cause_probable(desaccord, poste13)
+        controler("le desaccord de majeure CUDA passe devant la piste cuDNN",
+                  "reclame CUDA 12" in phrase and "expose CUDA 13" in phrase,
+                  phrase)
+        controler("et il disculpe explicitement cuDNN",
+                  "n'y est pour rien" in phrase, phrase)
+
+        poste12 = "CUDA_PATH=C:\\Program Files\\NVIDIA\\CUDA\\v12.4"
+        controler("deux majeures identiques ne sont pas un desaccord",
+                  module.desaccord_cuda(desaccord, poste12) is None,
+                  str(module.desaccord_cuda(desaccord, poste12)))
+        controler("et le message retombe alors sur la piste cuDNN",
+                  "CUDA/cuDNN" in module.cause_probable(desaccord, poste12),
+                  module.cause_probable(desaccord, poste12))
+        controler("sans version lisible cote poste, rien n'est affirme",
+                  module.desaccord_cuda(desaccord, "aucun indice") is None)
+    finally:
+        bac.fermer()
+
+
+def test_lignes_du_moteur():
+    """Ce que le moteur dit doit arriver lisible, et entier.
+
+    La ligne qui portait le diagnostic arrivait coupee sur "Require cuDNN 9.*
+    et CUDA " - juste avant le numero, seul mot utile - parce que le budget de
+    caracteres etait mange par un horodatage, un nom de fichier C++ et une
+    sequence de couleur ANSI que personne ne peut lire dans une fenetre GTK.
+    """
+    print("Materiel : la trace du moteur arrive lisible et entiere")
+    bac = Bac()
+    try:
+        module = bac.module
+        brut = ("\x1b[0;93m2026-09-17 23:14:17.6641112 [W:onnxruntime:Default, "
+                "onnxruntime_pybind_state.cc:1294 "
+                "onnxruntime::python::CreateExecutionProviderFactoryInstance] "
+                "Failed to create CUDAExecutionProvider. Require cuDNN 9.* and "
+                "CUDA 12.*, and the latest MSVC runtime. Please install all "
+                "dependencies as mentioned in the GPU requirements page, make "
+                "sure they're in the PATH, and that your GPU is supported.")
+        lignes = module.lignes_diagnostic_moteur(brut)
+        controler("la ligne est retenue", len(lignes) == 1, str(lignes))
+        ligne = lignes[0] if lignes else ""
+        controler("aucune sequence ANSI ne subsiste",
+                  "\x1b" not in ligne and "[0;93m" not in ligne, ligne)
+        controler("l'horodatage et le nom de fichier C++ sont retires",
+                  ligne.startswith("Failed to create"), ligne[:60])
+        controler("la version de CUDA exigee survit a la troncature",
+                  "CUDA 12.*" in ligne, ligne)
+
+        # Une ligne sans le preambule attendu ne doit pas etre amputee.
+        simple = module.message_du_moteur("LoadLibrary failed with error 126")
+        controler("une ligne sans preambule passe telle quelle",
+                  simple == "LoadLibrary failed with error 126", simple)
+    finally:
+        bac.fermer()
+
+
+def test_pile_gpu_demande_sa_branche_cuda():
+    """La branche CUDA ne se devine pas : elle se demande a onnxruntime.
+
+    Les roues 1.21 a 1.26 sont baties contre CUDA 12, la 1.30 contre CUDA 13.
+    Un nom de paquet ecrit en dur dans le greffon serait juste jusqu'a la
+    bascule suivante, puis faux sans que rien ne le signale - c'est ce qui est
+    arrive a un poste sous CUDA 13.3 avec une roue qui reclamait CUDA 12.
+    """
+    print("Materiel : la pile GPU demande a onnxruntime la branche qu'il veut")
+    bac = Bac()
+    try:
+        module = bac.module
+        gpu = " ".join(module.REQUIRED_PACKAGES_GPU)
+        controler("la pile GPU reclame les extras cuda et cudnn",
+                  "onnxruntime-gpu[cuda,cudnn]" in gpu, gpu)
+        controler("la pile processeur, elle, n'en reclame aucun",
+                  "[" not in " ".join(module.REQUIRED_PACKAGES),
+                  " ".join(module.REQUIRED_PACKAGES))
+        controler("les deux piles ne se confondent pas",
+                  module.signature_paquets(module.STACK_GPU)
+                  != module.signature_paquets(module.STACK_CPU))
+
+        # Un venv ou la roue a deja pose sa branche de cuDNN : y superposer
+        # l'autre branche remplacerait les DLL dans le meme dossier.
+        faux_venv = os.path.join(bac.dossier, "venv", "Scripts", "python.exe")
+        cudnn = os.path.join(bac.dossier, "venv", "Lib", "site-packages",
+                             "nvidia", "cudnn", "bin")
+        os.makedirs(cudnn, exist_ok=True)
+        os.makedirs(os.path.dirname(faux_venv), exist_ok=True)
+        open(faux_venv, "w").close()
+        if os.name != "nt":
+            # dossiers_dll_paquets suit la disposition du systeme courant.
+            lib = os.path.join(bac.dossier, "venv", "lib", "python3.11",
+                               "site-packages", "nvidia", "cudnn", "lib")
+            os.makedirs(lib, exist_ok=True)
+        trouve = module.cudnn_deja_installe(faux_venv)
+        controler("une branche cuDNN deja posee est reconnue",
+                  bool(trouve) and "cudnn" in trouve.lower(), str(trouve))
+
+        vide = os.path.join(bac.dossier, "vide", "bin", "python")
+        os.makedirs(os.path.dirname(vide), exist_ok=True)
+        open(vide, "w").close()
+        controler("et un venv sans cuDNN ne fait pas illusion",
+                  module.cudnn_deja_installe(vide) == "",
+                  str(module.cudnn_deja_installe(vide)))
     finally:
         bac.fermer()
 
@@ -1173,6 +1285,8 @@ def main():
     test_verdict_acceleration_memorise()
     test_diagnostic_du_moteur()
     test_cause_probable()
+    test_lignes_du_moteur()
+    test_pile_gpu_demande_sa_branche_cuda()
     test_verdict_perime_par_une_nouvelle_version()
     test_annulation_et_processus_orphelins()
     test_isolation_environnement()

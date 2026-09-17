@@ -357,18 +357,33 @@ son libellé annonce ce coût.
 runtime CUDA. C'est le seul endroit où le greffon décline une demande explicite,
 et il explique alors ce qui manque et comment s'en passer :
 
-> onnxruntime-gpu n'embarque pas son runtime, contrairement aux roues de
-> PyTorch : un pilote graphique ne suffit pas, il faut le CUDA Toolkit.
+La sonde porte sur le **runtime** et non sur le pilote : sonder le pilote ferait
+basculer vers la roue GPU tous les postes qui n'ont qu'un pilote — la grande
+majorité — pour un repli silencieux sur le processeur après plusieurs
+gigaoctets téléchargés.
 
-C'est aussi pourquoi la sonde porte sur le **runtime** et non sur le pilote :
-sonder le pilote ferait basculer vers la roue GPU tous les postes qui n'ont
-qu'un pilote — la grande majorité — pour un repli silencieux sur le processeur
-après plusieurs gigaoctets téléchargés.
+### La branche CUDA ne se devine pas
 
-Quand le runtime est là, l'installation tente en plus les roues pip de cuDNN,
-sans jamais en faire un échec bloquant, et expose leurs dossiers de
-bibliothèques sur le `PATH` du worker — sans quoi elles seraient installées mais
-introuvables.
+`onnxruntime-gpu` n'est pas bâti contre « CUDA » mais contre une branche
+précise, **et elle change** : les versions 1.21 à 1.26 réclament du CUDA 12, la
+1.30 du CUDA 13. Un nom de paquet écrit en dur dans le greffon serait juste
+jusqu'à la bascule suivante, puis faux sans que rien ne le signale. C'est
+exactement ce qui s'est produit sur un poste sous CUDA 13.3 dont la roue
+réclamait CUDA 12 : le moteur nommait cuDNN, qui était pourtant en place.
+
+Le greffon ne devine donc plus. Il demande `onnxruntime-gpu[cuda,cudnn]`, et
+pip installe la branche que la roue retenue déclare elle-même. Les
+bibliothèques CUDA vivent alors **dans l'environnement**, sans rien changer à
+l'installation système : la version du Toolkit du poste n'a plus à coïncider.
+
+Deux conséquences tenues :
+
+- le repli historique par roues cuDNN ne s'exécute que pour les roues
+  antérieures à 1.21, seules à ne déclarer aucun extra — et **jamais** si une
+  branche de cuDNN est déjà posée, car en superposer deux dans le même dossier
+  `nvidia/cudnn` est pire que de n'en avoir aucune ;
+- les dossiers de bibliothèques de ces roues sont exposés sur le `PATH` du
+  worker, sans quoi elles seraient installées mais introuvables.
 
 **Le chemin est ensuite validé par une inférence réelle**, pas par une requête
 de capacité : `onnxruntime` répond que `CUDAExecutionProvider` est disponible

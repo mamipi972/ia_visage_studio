@@ -42,7 +42,7 @@ Ce qui **a** été vérifié depuis ce dépôt, et comment :
 | Constante | Valeur | Nature | Rôle |
 | --- | --- | --- | --- |
 | `PLUGIN_ID` | ia_visage_studio | déclarée | Identifiant du greffon. Il nomme le journal, l'inventaire et le marqueur d'environnement. |
-| `PLUGIN_VERSION` | 1.1 | déclarée | Version du greffon, consignée dans le marqueur. Elle vit dans le code, jamais dans le nom du fichier. |
+| `PLUGIN_VERSION` | 1.2 | déclarée | Version du greffon, consignée dans le marqueur. Elle vit dans le code, jamais dans le nom du fichier. |
 | `PROCEDURE_NAME` | plug-in-ia-visage-studio | déclarée | Nom de la procédure enregistrée auprès de GIMP. |
 | `SHARED_DIR_NAME` | ai_suite_shared | déclarée | Dossier partagé par toute la suite. **Commun avec les autres greffons** : le modifier d'un seul côté sépare silencieusement deux greffons qui devaient partager leurs modèles. |
 | `VARIABLE_DOSSIER` | GIMP_AI_SUITE_DIR | déclarée | Variable d'environnement facultative qui impose l'emplacement des données volumineuses : autre disque, installation portable, dossier d'entreprise. Jamais nécessaire. |
@@ -60,8 +60,8 @@ Ce qui **a** été vérifié depuis ce dépôt, et comment :
 | `STACK_CPU` | onnx-cpu | déclarée | Nom de la pile processeur. Il suffixe le venv et le cache d'interpréteur. **Identique à celui du greffon `gimp_sam2_segmentation`, et c'est voulu** : les deux déclarent exactement la même pile et partagent donc `venv-onnx-cpu`. |
 | `STACK_GPU` | onnx-gpu | déclarée | Pile GPU, dans un environnement séparé. `onnxruntime` et `onnxruntime-gpu` s'installent dans le même dossier du `site-packages` et se détruisent mutuellement : un environnement par variante est la seule structure saine. |
 | `REQUIRED_PACKAGES` | numpy>=1.24.0,<3, opencv-python-headless>=4.8.0,<5, onnxruntime>=1.16.0,<2 | déclarée | Les trois seules dépendances que le worker importe réellement. Ni pillow, ni le paquet contrib d'OpenCV, aucun extra de confort. La borne haute d'OpenCV n'est pas décorative : à partir d'OpenCV 5, le paquet ne livre plus les cascades de Haar du détecteur de repli. |
-| `REQUIRED_PACKAGES_GPU` | numpy>=1.24.0,<3, opencv-python-headless>=4.8.0,<5, onnxruntime-gpu>=1.16.0,<2 | déclarée | Même pile, variante GPU. |
-| `PAQUETS_CUDNN` | nvidia-cudnn-cu12, nvidia-cudnn-cu11 | déclarée | Roues pip de cuDNN tentées dans cet ordre quand la pile GPU est demandée. Leur échec n'est jamais bloquant. |
+| `REQUIRED_PACKAGES_GPU` | numpy>=1.24.0,<3, opencv-python-headless>=4.8.0,<5, onnxruntime-gpu[cuda,cudnn]>=1.16.0,<2 | déclarée | Même pile, variante GPU. Les extras `[cuda,cudnn]` laissent pip installer la branche CUDA que réclame la roue qu'il vient de retenir — CUDA 12 pour les versions 1.21 à 1.26, CUDA 13 à partir de la 1.30. Une roue antérieure à 1.21 ne déclare pas ces extras : pip avertit et installe quand même. |
+| `PAQUETS_CUDNN` | nvidia-cudnn-cu12, nvidia-cudnn-cu11 | déclarée | Repli pour les roues antérieures à 1.21, seules à ne déclarer aucun extra ; elles sont toutes de branche CUDA 12 ou 11. Ce repli **ne s'exécute que si aucune branche de cuDNN n'est déjà présente** : en poser une seconde par-dessus la bonne les mélangerait dans le même dossier `nvidia/cudnn`. Son échec n'est jamais bloquant. |
 | `PY_MIN` | 3.8 | déclarée | Plancher imposé par les roues des dépendances. Un candidat sous ce plancher est écarté. |
 | `PY_MAX_TESTED` | 3.12 | déclarée | Dernière version pour laquelle une installation complète a été tentée. **Ce plafond n'interdit rien** : il classe. Sur un poste qui ne possède qu'une version plus récente, cette version est retenue. À relever après chaque campagne de test. |
 | `PENALITE_APPLICATION_TIERCE` | 60 | déclarée | Points retirés à un interpréteur livré avec une application tierce (Blender, Inkscape, GIMP...). Déclassement, jamais rejet : sur un poste qui n'a rien d'autre, refuser revient à ne pas fonctionner. |
