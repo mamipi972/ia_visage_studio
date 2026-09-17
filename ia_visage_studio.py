@@ -2143,22 +2143,85 @@ def ecrire_inventaire(details):
 #    produire un rapport de bogue : si le diagnostic depend de ce geste, il
 #    n'existe pas.
 #
-#    Le dossier logs/ est partage par la suite et l'horodatage est le meme pour
-#    tous les greffons : la purge conserve donc les dix incidents les plus
-#    recents de la suite, quel que soit le greffon qui les a produits. Le
-#    fichier incident.json dit lequel.
+#    Le dossier logs/ est partage par toute la suite. Chaque archive porte un
+#    incident.json qui nomme le greffon qui l'a produite, et la purge ne
+#    s'applique qu'aux siennes : voir archives_du_greffon().
 # ==============================================================================
+NOM_FICHIER_INCIDENT = "incident.json"
+
+
+def archives_du_greffon(racine):
+    """Archives produites par CE greffon, triees de la plus ancienne a la plus
+    recente, datees par leur contenu et non par leur nom.
+
+    Le dossier logs/ est partage, et deux conventions de nommage y cohabitent
+    dans la suite : "2026-09-16_19-44-05" pour certains greffons,
+    "20260916-194405-000123" pour d'autres. En ASCII le tiret (0x2D) precede le
+    chiffre (0x30) : un tri alphabetique place donc systematiquement la
+    premiere forme en tete, et une purge qui s'y fierait supprimerait toujours
+    les archives des autres greffons avant les siennes, quel que soit leur age.
+    Dix incidents d'un greffon suffiraient a effacer tout l'historique d'un
+    autre - sans le moindre message, puisqu'il n'y a pas d'incident quand un
+    greffon fonctionne.
+
+    Deux consequences, tirees de ce constat :
+
+    - on ne purge que ce qu'on a produit, reconnaissable a son incident.json ;
+    - on date par la date du fichier, pas par le nom du dossier, pour ne
+      dependre d'aucune convention de nommage.
+
+    Une archive dont l'incident.json n'a pas pu etre ecrit n'est jamais
+    supprimee : elle restera, ce qui est preferable a effacer celle d'un
+    voisin.
+    """
+    trouvees = []
+    try:
+        noms = os.listdir(racine)
+    except Exception:
+        return []
+    for nom in noms:
+        chemin = os.path.join(racine, nom)
+        marque = os.path.join(chemin, NOM_FICHIER_INCIDENT)
+        if not os.path.isdir(chemin) or not os.path.isfile(marque):
+            continue
+        try:
+            with open(marque, "r", encoding="utf-8", errors="replace") as f:
+                donnees = json.load(f)
+        except Exception:
+            continue
+        if not isinstance(donnees, dict) or donnees.get("greffon") != PLUGIN_ID:
+            continue
+        try:
+            date = os.path.getmtime(marque)
+        except Exception:
+            date = 0.0
+        trouvees.append((date, nom, chemin))
+    trouvees.sort()
+    return [chemin for _, _, chemin in trouvees]
+
+
 def archiver_journaux(dossier_travail, contexte=None):
     try:
         racine = get_logs_dir()
         # Deux incidents dans la meme seconde ne doivent pas s'ecraser : c'est
         # justement dans une serie d'echecs rapproches que les journaux
-        # comptent. Les microsecondes gardent aussi l'ordre alphabetique
-        # identique a l'ordre chronologique, dont depend la purge ci-dessous.
+        # comptent.
         horodatage = "%s-%06d" % (time.strftime("%Y%m%d-%H%M%S"),
                                   time.time_ns() // 1000 % 1000000)
         cible = os.path.join(racine, horodatage)
         os.makedirs(cible, exist_ok=True)
+        # L'incident est marque avant la copie : si celle-ci echoue a
+        # mi-chemin, l'archive reste identifiable, donc purgeable.
+        try:
+            with open(os.path.join(cible, NOM_FICHIER_INCIDENT), "w",
+                      encoding="utf-8") as f:
+                json.dump({"greffon": PLUGIN_ID, "version": PLUGIN_VERSION,
+                           "pile": pile_active(), "api_gimp": API_GIMP,
+                           "plateforme": sys.platform,
+                           "horodatage": horodatage,
+                           "contexte": contexte or {}}, f, indent=2)
+        except Exception:
+            pass
         for nom in os.listdir(dossier_travail):
             if not (nom.endswith(".log") or nom.endswith(".json")
                     or nom.endswith(".py")):
@@ -2168,20 +2231,8 @@ def archiver_journaux(dossier_travail, contexte=None):
                              os.path.join(cible, nom))
             except Exception:
                 pass
-        try:
-            with open(os.path.join(cible, "incident.json"), "w",
-                      encoding="utf-8") as f:
-                json.dump({"greffon": PLUGIN_ID, "version": PLUGIN_VERSION,
-                           "pile": pile_active(), "api_gimp": API_GIMP,
-                           "plateforme": sys.platform,
-                           "horodatage": horodatage,
-                           "contexte": contexte or {}}, f, indent=2)
-        except Exception:
-            pass
-        entrees = sorted(d for d in os.listdir(racine)
-                         if os.path.isdir(os.path.join(racine, d)))
-        for vieux in entrees[:-ARCHIVES_A_CONSERVER]:
-            shutil.rmtree(os.path.join(racine, vieux), ignore_errors=True)
+        for vieux in archives_du_greffon(racine)[:-ARCHIVES_A_CONSERVER]:
+            shutil.rmtree(vieux, ignore_errors=True)
         return cible
     except Exception as e:
         journal("archivage impossible: %s" % e)

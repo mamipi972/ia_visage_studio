@@ -26,12 +26,14 @@ Ce qui **a** été vérifié depuis ce dépôt, et comment :
 
 | Affirmation | Vérifiée par | Date | Version |
 | --- | --- | --- | --- |
-| Le greffon se charge et s'exerce hors de GIMP | `outils/tests_unitaires.py`, 87 contrôles | 2026-09-16 | 1.0 |
+| Le greffon se charge et s'exerce hors de GIMP | `outils/tests_unitaires.py`, 95 contrôles | 2026-09-16 | 1.0 |
 | Le worker produit les bons artefacts contre une doublure d'`onnxruntime` | `outils/tests_worker.py`, 54 contrôles | 2026-09-16 | 1.0 |
 | `run_procedure` aboutit de bout en bout et produit un calque nommé | `outils/tests_integration.py`, 30 contrôles | 2026-09-16 | 1.0 |
-| Chaque correctif fait échouer son test quand on le remet en défaut | `outils/tests_mutation.py`, 28 mutations | 2026-09-16 | 1.0 |
+| Chaque correctif fait échouer son test quand on le remet en défaut | `outils/tests_mutation.py`, 30 mutations | 2026-09-16 | 1.0 |
 | Le plafond mémoire refuse bien une allocation trop grande | `tests_worker.py`, cas 11, POSIX uniquement | 2026-09-16 | 1.0 |
 | Les cascades de Haar disparaissent à partir d'OpenCV 5 | constat sur `opencv-python-headless` 5.0.0 et 4.14.0 | 2026-09-16 | 1.0 |
+| Sur un venv déjà installé par un autre greffon : zéro `pip`, zéro création de venv | `outils/tests_unitaires.py`, `test_poste_deja_installe` | 2026-09-16 | 1.0 |
+| Les cinq greffons de la suite ne se détruisent pas mutuellement leurs ressources | [`AUDIT_DE_SUITE.md`](AUDIT_DE_SUITE.md), relecture croisée | 2026-09-16 | 1.0 |
 
 ## Identité et emplacements
 
@@ -43,7 +45,8 @@ Ce qui **a** été vérifié depuis ce dépôt, et comment :
 | `SHARED_DIR_NAME` | ai_suite_shared | déclarée | Dossier partagé par toute la suite. **Commun avec les autres greffons** : le modifier d'un seul côté sépare silencieusement deux greffons qui devaient partager leurs modèles. |
 | `VARIABLE_DOSSIER` | GIMP_AI_SUITE_DIR | déclarée | Variable d'environnement facultative qui impose l'emplacement des données volumineuses : autre disque, installation portable, dossier d'entreprise. Jamais nécessaire. |
 | `VARIABLE_DEBUG` | GIMP_AI_SUITE_DEBUG | déclarée | Variable d'environnement qui conserve le dossier d'exécution au lieu de le détruire. Outil de développement : l'archivage des journaux, lui, est automatique. |
-| `ARCHIVES_A_CONSERVER` | 10 | déclarée | Nombre d'incidents conservés sous `logs/` avant purge du plus ancien. Le dossier est partagé par la suite ; `incident.json` dit quel greffon a produit chaque archive. |
+| `ARCHIVES_A_CONSERVER` | 10 | déclarée | Nombre d'incidents **de ce greffon** conservés sous `logs/` avant purge du plus ancien. Le dossier est partagé par la suite : la purge ne touche qu'aux archives portant un `incident.json` au nom de ce greffon, et les date par le contenu et non par le nom du dossier. |
+| `NOM_FICHIER_INCIDENT` | incident.json | déclarée | Fichier déposé dans chaque archive de journaux, qui nomme le greffon, sa version, sa pile et la plateforme. C'est lui qui rend une archive identifiable, donc purgeable par son seul propriétaire. |
 | `API_GIMP_CANDIDATES` | 3.0, 4.0 | déclarée | Versions de l'API GObject essayées, dans l'ordre. Le numéro suit l'API, pas l'application : GIMP 3.0, 3.2 et 3.4 partagent l'API `3.0`. |
 | `FICHIER_SOURCES_UTILISATEUR` | sources_modeles.json | déclarée | Fichier facultatif du dossier partagé qui ajoute des adresses de téléchargement. Il existe pour qu'une adresse morte se répare sans toucher au code. |
 

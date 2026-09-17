@@ -224,6 +224,39 @@ MUTATIONS_GREFFON = [
         "rouges": ["le marqueur porte le nom du greffon"],
     },
     {
+        "nom": "la reparation d'un environnement existant est supprimee",
+        "pourquoi": "toute la logique de choix placee dans la seule fonction "
+                    "de creation ne s'execute jamais sur une installation deja "
+                    "en place : le greffon reinstallerait par-dessus le venv "
+                    "d'un voisin de la suite, plusieurs centaines de "
+                    "megaoctets, a chaque premier lancement",
+        "remplacements": [(
+            "    if not reinstaller and os.path.isfile(py):\n"
+            '        progression("Verification de l\'environnement IA...")\n',
+            "    if False and os.path.isfile(py):\n"
+            '        progression("Verification de l\'environnement IA...")\n')],
+        "tests": ["test_poste_deja_installe"],
+        "rouges": ["aucune commande pip n'est lancee"],
+    },
+    {
+        "nom": "la purge des journaux redevient alphabetique sur tout le dossier",
+        "pourquoi": "logs/ est partage par la suite et deux conventions de "
+                    "nommage y cohabitent ; en ASCII le tiret precede le "
+                    "chiffre, donc un tri alphabetique supprimerait toujours "
+                    "les archives du voisin avant les siennes",
+        "remplacements": [(
+            "        for vieux in archives_du_greffon(racine)"
+            "[:-ARCHIVES_A_CONSERVER]:\n"
+            "            shutil.rmtree(vieux, ignore_errors=True)\n",
+            "        entrees = sorted(os.path.join(racine, d)\n"
+            "                         for d in os.listdir(racine)\n"
+            "                         if os.path.isdir(os.path.join(racine, d)))\n"
+            "        for vieux in entrees[:-ARCHIVES_A_CONSERVER]:\n"
+            "            shutil.rmtree(vieux, ignore_errors=True)\n")],
+        "tests": ["test_journaux_et_messages"],
+        "rouges": ["les archives d'un greffon voisin sont intactes"],
+    },
+    {
         "nom": "les donnees volumineuses retournent sous le profil GIMP",
         "pourquoi": "sur un profil itinerant, plusieurs gigaoctets seraient "
                     "synchronises a chaque ouverture de session",

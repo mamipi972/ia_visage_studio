@@ -199,7 +199,10 @@ secondes avant tout travail utile.
 
 Le greffon `gimp_sam2_segmentation` déclare exactement la même pile technique.
 Les deux partagent donc `venv-onnx-cpu` : le premier qui s'installe fait le
-travail, le second constate et démarre.
+travail, le second constate et démarre. Ce n'est pas une déduction de lecture
+du code — c'est mesuré, et le contrôle est permanent : sur un venv déjà en
+place et sans marqueur, le greffon lance zéro commande `pip` et zéro création
+d'environnement (`outils/tests_unitaires.py`, `test_poste_deja_installe`).
 
 **Le marqueur d'environnement, lui, est propre à chaque greffon**
 (`env_onnx-cpu_ia_visage_studio.json`). C'est délibéré : il contient le numéro
@@ -345,8 +348,15 @@ informé.
 paramètres et script worker sont copiés dans un sous-dossier horodaté de
 `logs/`, sous le dossier partagé, **avant** que le dossier de travail ne soit
 détruit. Le message d'erreur cite ce chemin : joignez ce dossier à tout
-signalement. Les dix incidents les plus récents de la suite sont conservés, et
-`incident.json` dit quel greffon a produit chacun.
+signalement.
+
+Ce dossier `logs/` est partagé par toute la suite, mais **le greffon ne purge
+que ses propres archives** — celles qui portent un `incident.json` à son nom —
+et il les date par le contenu, pas par le nom du dossier. Deux conventions de
+nommage cohabitent dans la suite, et en ASCII le tiret précède le chiffre : une
+purge alphabétique supprimerait systématiquement les archives des autres
+greffons avant les siennes. Voir [`AUDIT_DE_SUITE.md`](AUDIT_DE_SUITE.md). Une
+archive que le greffon ne sait pas identifier n'est jamais supprimée.
 
 Vous n'avez **ni variable d'environnement à poser, ni terminal à ouvrir** pour
 produire un rapport de bogue. Si le diagnostic en dépendait, il n'existerait
@@ -433,11 +443,12 @@ contrôle qu'on corrige, avant de livrer.
 | `outils/tests_mutation.py` | La preuve par mutation : chaque correctif est remis en défaut, et son test doit alors échouer. |
 | `outils/faux_gimp.py` | La doublure de l'API GIMP 3.0, une centaine de lignes. |
 | `outils/sorties_reelles/` | Sorties réelles capturées, contre lesquelles les stratégies de détection sont testées. |
+| [`AUDIT_DE_SUITE.md`](AUDIT_DE_SUITE.md) | La relecture croisée des cinq greffons de la suite : ressources partagées, écarts constatés, ce qui a été corrigé et où. À refaire avant toute nouvelle livraison dans la suite. |
 
 ### Pourquoi une preuve par mutation
 
 Un test qui passe ne prouve rien tant qu'on n'a pas vérifié qu'il sait échouer.
-`tests_mutation.py` remet vingt-huit comportements fautifs dans une copie du
+`tests_mutation.py` remet trente comportements fautifs dans une copie du
 code et vérifie que le contrôle correspondant passe au rouge — oubli du
 décalage de mise en lettre-boîte, pivot laissé en BGR, normalisation ignorée,
 16 bits traité comme du 8 bits, table de préséance désactivée, plafond mémoire

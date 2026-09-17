@@ -16,6 +16,7 @@ processus enfant ne survit pas a son parent.
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -684,16 +685,36 @@ def test_journaux_et_messages():
                   incident.get("greffon") == module.PLUGIN_ID, str(incident))
         shutil.rmtree(travail, ignore_errors=True)
 
+        # Un greffon voisin de la suite depose ses archives dans le meme
+        # dossier, avec une autre convention de nommage. En ASCII le tiret
+        # precede le chiffre : un tri alphabetique placerait toujours cette
+        # forme en tete, et une purge qui s'y fierait la supprimerait en
+        # premier, quel que soit son age.
+        voisines = []
+        for heure in ("19-44-05", "19-44-06", "19-44-07"):
+            d = os.path.join(module.get_logs_dir(), "2026-09-16_" + heure)
+            os.makedirs(d, exist_ok=True)
+            with open(os.path.join(d, "incident.json"), "w",
+                      encoding="utf-8") as f:
+                json.dump({"greffon": "ia_detourage", "version": "3.11.0"}, f)
+            voisines.append(d)
+        sans_marque = os.path.join(module.get_logs_dir(), "2026-01-01_00-00-00")
+        os.makedirs(sans_marque, exist_ok=True)
+
         for _ in range(module.ARCHIVES_A_CONSERVER + 4):
             t = tempfile.mkdtemp(prefix="travail_")
             with open(os.path.join(t, "worker.log"), "w") as f:
                 f.write("x")
             module.archiver_journaux(t)
             shutil.rmtree(t, ignore_errors=True)
-        restants = [d for d in os.listdir(module.get_logs_dir())
-                    if os.path.isdir(os.path.join(module.get_logs_dir(), d))]
-        controler("la purge conserve les dix incidents les plus recents",
-                  len(restants) == module.ARCHIVES_A_CONSERVER, str(len(restants)))
+        miennes = module.archives_du_greffon(module.get_logs_dir())
+        controler("la purge conserve les dix incidents de ce greffon",
+                  len(miennes) == module.ARCHIVES_A_CONSERVER, str(len(miennes)))
+        controler("les archives d'un greffon voisin sont intactes",
+                  all(os.path.isdir(d) for d in voisines),
+                  str([d for d in voisines if not os.path.isdir(d)]))
+        controler("une archive non identifiee n'est jamais supprimee",
+                  os.path.isdir(sans_marque), sans_marque)
 
         texte = ("RAISON: le modele est absent.\n"
                  "Detail : 400 lignes de sortie pip\nencore une ligne")
@@ -711,6 +732,111 @@ def test_journaux_et_messages():
         controler("un journal en UTF-16 reste lisible",
                   "erreur" in module.lire_journal(chemin),
                   repr(module.lire_journal(chemin)[:40]))
+    finally:
+        bac.fermer()
+
+
+def _venv_factice(module, paquets):
+    """Cree un venv minimal et y depose des modules bouchons.
+
+    Sans pip : le but est justement de verifier qu'il n'est jamais appele. Les
+    bouchons rendent le test independant de ce qui est installe sur la machine,
+    et c'est le chemin de decision qui est teste, pas les vraies roues.
+    """
+    venv = os.path.join(module.get_data_dir(), module.nom_venv(module.STACK_CPU))
+    code = subprocess.call([sys.executable, "-m", "venv", "--without-pip", venv],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if code != 0:
+        return None, None, None
+    py = module.chemin_python_venv(venv)
+    site = subprocess.run(
+        [py, "-c", "import site; print(site.getsitepackages()[0])"],
+        capture_output=True, text=True).stdout.strip()
+    if not site or not os.path.isdir(site):
+        return None, None, None
+    for nom in paquets:
+        with open(os.path.join(site, nom + ".py"), "w", encoding="utf-8") as f:
+            f.write("__version__ = '0.0-bouchon'\n")
+    return venv, py, site
+
+
+def test_poste_deja_installe():
+    """L'etat que les tests oublient le plus souvent : celui d'un poste deja
+    installe.
+
+    Le venv de la pile est la, pose par un autre greffon de la suite, et ce
+    greffon-ci n'a pas encore de marqueur. Il doit constater et demarrer, pas
+    reinstaller plusieurs centaines de megaoctets. Le second cas verifie que ce
+    test sait dire le contraire : un venv incomplet doit, lui, declencher une
+    reparation.
+    """
+    print("Environnement : poste ou un autre greffon a deja installe la pile")
+    bac = Bac()
+    try:
+        module = bac.module
+        venv, py, site = _venv_factice(module, ("numpy", "cv2", "onnxruntime"))
+        if not py:
+            controler("un venv de test a pu etre cree", False,
+                      "creation impossible sur ce poste")
+            return
+        controler("aucun marqueur pour ce greffon au depart",
+                  not os.path.isfile(module.get_marker_path()))
+
+        lances = []
+        original = module.demarrer_processus
+
+        def espion(cmd, env, fichier_log=None):
+            lances.append(list(cmd))
+            return original(cmd, env, fichier_log)
+
+        module.demarrer_processus = espion
+        # La decouverte d'interpreteur a ses propres tests ; on la neutralise
+        # ici pour que ce test ne porte que sur la decision de reinstaller.
+        module.decouvrir_pythons = lambda: [
+            {"chemin": sys.executable, "canal": "test", "version": (3, 11, 0),
+             "score_canal": 90, "dans_plafond": 1}]
+
+        travail = tempfile.mkdtemp(prefix="travail_")
+        # L'appel est protege : un greffon qui reinstallerait ici echouerait
+        # faute de pip, et une exception qui remonte ferait sauter les
+        # controles suivants - le test dirait alors moins que ce qu'il sait.
+        retour, incident = None, ""
+        try:
+            retour = module.preparer_environnement(module.STACK_CPU, travail,
+                                                   False, lambda texte: None)
+        except Exception as e:
+            incident = str(e)[:200]
+        pip = [c for c in lances if "pip" in " ".join(c)]
+        creations = [c for c in lances if "venv" in c]
+        controler("l'interpreteur du venv existant est retenu",
+                  retour is not None
+                  and os.path.normpath(retour) == os.path.normpath(py),
+                  retour or incident)
+        controler("aucune commande pip n'est lancee", not pip, str(pip))
+        controler("aucun venv n'est recree", not creations, str(creations))
+        marqueur = module.lire_marqueur()
+        controler("le greffon ecrit son propre marqueur, sans toucher a celui "
+                  "du voisin",
+                  marqueur.get("statut") == "pret"
+                  and module.PLUGIN_ID in os.path.basename(module.get_marker_path()),
+                  str(marqueur.get("statut")))
+
+        # Second cas : le venv existe mais lui manque une dependance. Le
+        # greffon doit alors reparer, faute de quoi le controle ci-dessus ne
+        # prouverait rien - il serait vert meme si plus rien n'etait jamais
+        # installe.
+        os.remove(os.path.join(site, "onnxruntime.py"))
+        module.invalider_marqueur("test : dependance retiree")
+        lances[:] = []
+        try:
+            module.preparer_environnement(module.STACK_CPU, travail, False,
+                                          lambda texte: None)
+        except Exception:
+            pass
+        pip = [c for c in lances if "pip" in " ".join(c)]
+        controler("un venv incomplet declenche bien une reparation", bool(pip),
+                  str(lances))
+        shutil.rmtree(travail, ignore_errors=True)
     finally:
         bac.fermer()
 
@@ -798,6 +924,7 @@ def main():
     test_annulation_et_processus_orphelins()
     test_isolation_environnement()
     test_espace_disque()
+    test_poste_deja_installe()
     test_journaux_et_messages()
     test_api_gimp()
     test_etiquette_du_calque()
