@@ -382,8 +382,33 @@ Deux conséquences tenues :
   antérieures à 1.21, seules à ne déclarer aucun extra — et **jamais** si une
   branche de cuDNN est déjà posée, car en superposer deux dans le même dossier
   `nvidia/cudnn` est pire que de n'en avoir aucune ;
-- les dossiers de bibliothèques de ces roues sont exposés sur le `PATH` du
-  worker, sans quoi elles seraient installées mais introuvables.
+- les dossiers de bibliothèques de ces roues sont exposés au chargeur
+  dynamique, sans quoi elles seraient installées mais introuvables.
+
+### Exposer ne veut pas dire mettre sur le `PATH`
+
+Deux pièges se cumulaient ici, et chacun suffisait à faire échouer
+l'accélération sur une machine parfaitement équipée.
+
+**Le `PATH` ne suffit pas.** Sous Windows, depuis Python 3.8, il n'est plus
+consulté pour résoudre les dépendances d'une DLL chargée par un module
+d'extension : seuls comptent les dossiers enregistrés par
+`os.add_dll_directory`. onnxruntime ne le fait pas lui-même — vérifié dans sa
+version 1.30, qui ne teste que le runtime VC. Le worker et le script de
+validation l'appellent donc, avant tout import du moteur, et gardent les
+poignées rendues : leur ramassage par le collecteur retirerait le dossier
+aussitôt ajouté.
+
+**Un dossier ne se reconnaît pas à son nom.** Les roues CUDA 12 rangeaient
+leurs bibliothèques dans `nvidia/<paquet>/bin` ; celles de CUDA 13 ont adopté
+`nvidia/cu13/bin/x86_64`, où `bin` ne contient qu'un sous-dossier. Un filtre
+sur le nom exposait donc un dossier vide, et le moteur signalait
+`cublas64_13.dll` introuvable alors que la roue était installée. Le critère
+porte désormais sur le **contenu** : un dossier compte s'il contient une
+bibliothèque chargeable. Relevé le 2026-09-17 sur quatre roues —
+`nvidia-cublas-cu12` et `nvidia-cudnn-cu12` en `nvidia/<paquet>/bin`,
+`nvidia-cudnn-cu13` aussi, mais `nvidia-cublas` et `nvidia-cuda-runtime` en
+`nvidia/cu13/bin/x86_64`.
 
 **Le chemin est ensuite validé par une inférence réelle**, pas par une requête
 de capacité : `onnxruntime` répond que `CUDAExecutionProvider` est disponible

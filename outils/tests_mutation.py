@@ -200,6 +200,65 @@ MUTATIONS_WORKER = [
 # ---------------------------------------------------------------------------
 MUTATIONS_GREFFON = [
     {
+        "nom": "les dossiers de bibliotheques se reperent de nouveau au nom",
+        "pourquoi": "les roues CUDA 13 rangent leurs DLL sous "
+                    "nvidia/cu13/bin/x86_64 : un filtre sur le nom \"bin\" "
+                    "expose un dossier vide, et le moteur declare "
+                    "cublas64_13.dll introuvable alors que la roue est "
+                    "installee",
+        "remplacements": [(
+            "        for dossier, _, fichiers in os.walk(base):\n"
+            "            if contient_bibliotheque(fichiers):\n"
+            "                dossiers.append(dossier)\n",
+            "        for dossier, _, fichiers in os.walk(base):\n"
+            "            if os.path.basename(dossier).lower() in (\"bin\", \"lib\"):\n"
+            "                dossiers.append(dossier)\n")],
+        "tests": ["test_dossiers_de_bibliotheques_nvidia"],
+        "rouges": ["la disposition CUDA 13 est trouvee malgre son sous-dossier",
+                   "un dossier sans bibliotheque n'est pas expose",
+                   "le dossier bin intermediaire, vide, ne l'est pas non plus"],
+    },
+    {
+        "nom": "un fichier d'edition de liens passe pour une bibliotheque",
+        "pourquoi": "les roues posent aussi des .lib et des en-tetes ; les "
+                    "compter exposerait des dossiers qui ne contiennent "
+                    "aucune bibliotheque chargeable, et diluerait le "
+                    "diagnostic",
+        "remplacements": [(
+            "        if bas.endswith(\".so\") or \".so.\" in bas:\n"
+            "            return True\n",
+            "        if bas.endswith(\".so\") or \".so.\" in bas or bas.endswith(\".lib\"):\n"
+            "            return True\n")],
+        "tests": ["test_dossiers_de_bibliotheques_nvidia"],
+        "rouges": ["un dossier sans bibliotheque n'est pas expose",
+                   "un fichier d'en-tete ou d'edition de liens ne compte pas"],
+    },
+    {
+        "nom": "la dependance manquante n'est plus nommee",
+        "pourquoi": "le message retombe sur la piste cuDNN alors que la trace "
+                    "nomme exactement la bibliotheque absente, seul fait "
+                    "exploitable de toute la ligne",
+        "remplacements": [(
+            "    manquante = dependance_manquante(constat)\n"
+            "    if manquante:\n",
+            "    manquante = None\n"
+            "    if manquante:\n")],
+        "tests": ["test_cause_probable"],
+        "rouges": ["la bibliotheque absente est nommee",
+                   "et le message distingue le dossier non expose du fichier absent"],
+    },
+    {
+        "nom": "la trace du moteur se coupe de nouveau par la fin",
+        "pourquoi": "\"which depends on cublas64_13.dll\" est en fin de ligne : "
+                    "une coupe par la fin emporte precisement le nom de ce "
+                    "qui manque",
+        "remplacements": [(
+            "                interessantes.append(raccourcir_au_milieu(ligne))",
+            "                interessantes.append(ligne[:LONGUEUR_LIGNE_MOTEUR])")],
+        "tests": ["test_lignes_du_moteur"],
+        "rouges": ["le nom de la bibliotheque absente survit a la coupe"],
+    },
+    {
         "nom": "la pile GPU redevient un nom de paquet sans extras",
         "pourquoi": "la branche CUDA serait a nouveau devinee : juste tant que "
                     "les roues restent en CUDA 12, fausse des la bascule en "

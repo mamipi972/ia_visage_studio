@@ -732,6 +732,26 @@ def test_cause_probable():
         controler("et il disculpe explicitement cuDNN",
                   "n'y est pour rien" in phrase, phrase)
 
+        # Releve le 2026-09-17, une fois les majeures accordees : la trace
+        # nomme la bibliotheque absente, et c'est le seul fait exploitable.
+        depend = {"disponibles": ["CUDAExecutionProvider", "CPUExecutionProvider"],
+                  "journal": ["[ONNXRuntimeError] : 1 : FAIL : Error loading "
+                              "\"...\\onnxruntime_providers_cuda.dll\" which "
+                              "depends on \"cublas64_13.dll\" which is missing.",
+                              "Failed to create CUDAExecutionProvider. Require "
+                              "cuDNN 9.* and CUDA 13.*"],
+                  "dll_exposees": []}
+        poste13 = "CUDA_PATH=C:\\Program Files\\NVIDIA\\CUDA\\v13.3"
+        phrase_dep = module.cause_probable(depend, poste13)
+        controler("la bibliotheque absente est nommee",
+                  "cublas64_13.dll" in phrase_dep, phrase_dep)
+        depend_expose = dict(depend, dll_exposees=["a\\bin", "b\\bin"])
+        phrase_expose = module.cause_probable(depend_expose, poste13)
+        controler("et le message distingue le dossier non expose du fichier absent",
+                  "PATH n'y suffit plus" in phrase_dep
+                  and "pas dans l'environnement" in phrase_expose,
+                  phrase_dep[:80] + " || " + phrase_expose[:80])
+
         poste12 = "CUDA_PATH=C:\\Program Files\\NVIDIA\\CUDA\\v12.4"
         controler("deux majeures identiques ne sont pas un desaccord",
                   module.desaccord_cuda(desaccord, poste12) is None,
@@ -774,6 +794,36 @@ def test_lignes_du_moteur():
         controler("la version de CUDA exigee survit a la troncature",
                   "CUDA 12.*" in ligne, ligne)
 
+        # La ligne qui nomme la dependance absente est tres longue - elle
+        # contient le chemin complet du venv - et porte le nom recherche a son
+        # tout dernier mot. Une coupe par la fin l'emporte a coup sur.
+        # Telle que le moteur l'ecrit, prefixe de chemin de build compris :
+        # 330 caracteres pour un budget de 300, donc reellement coupee. Une
+        # ligne plus courte laisserait le controle vert quelle que soit la
+        # facon de couper, et ne prouverait rien - c'est arrive ici meme.
+        longue = ("N:\\_work\\1\\s\\onnxruntime\\core\\session"
+                  "\\provider_bridge_ort.cc:1988 "
+                  "onnxruntime::ProviderLibrary::Get "
+                  "[ONNXRuntimeError] : 1 : FAIL : Error loading \"C:\\Users\\"
+                  "maxim\\AppData\\Local\\GIMP\\ai_suite_shared\\venv-onnx-gpu"
+                  "\\Lib\\site-packages\\onnxruntime\\capi\\"
+                  "onnxruntime_providers_cuda.dll\" which depends on "
+                  "\"cublas64_13.dll\" which is missing.")
+        controler("la ligne d'essai depasse vraiment le budget",
+                  len(longue) > module.LONGUEUR_LIGNE_MOTEUR,
+                  "%d caracteres pour un budget de %d"
+                  % (len(longue), module.LONGUEUR_LIGNE_MOTEUR))
+        coupee = module.lignes_diagnostic_moteur(longue)[0]
+        controler("le nom de la bibliotheque absente survit a la coupe",
+                  "cublas64_13.dll" in coupee, coupee)
+        controler("et la coupe reste dans le budget annonce",
+                  len(coupee) <= module.LONGUEUR_LIGNE_MOTEUR,
+                  "%d caracteres" % len(coupee))
+        controler("le nom s'extrait de la ligne coupee",
+                  module.dependance_manquante({"journal": [coupee]})
+                  == "cublas64_13.dll",
+                  str(module.dependance_manquante({"journal": [coupee]})))
+
         # Une ligne sans le preambule attendu ne doit pas etre amputee.
         simple = module.message_du_moteur("LoadLibrary failed with error 126")
         controler("une ligne sans preambule passe telle quelle",
@@ -810,13 +860,14 @@ def test_pile_gpu_demande_sa_branche_cuda():
         cudnn = os.path.join(bac.dossier, "venv", "Lib", "site-packages",
                              "nvidia", "cudnn", "bin")
         os.makedirs(cudnn, exist_ok=True)
+        # Une vraie bibliotheque, pas un dossier vide : un dossier ne compte
+        # plus par son nom mais par ce qu'il contient. Releve sur les roues
+        # nvidia_cudnn_cu12 et nvidia_cudnn_cu13, qui gardent toutes deux ce
+        # chemin la ou les bibliotheques CUDA 13 ont migre vers
+        # nvidia/cu13/bin/x86_64.
+        open(os.path.join(cudnn, "cudnn64_9.dll"), "w").close()
         os.makedirs(os.path.dirname(faux_venv), exist_ok=True)
         open(faux_venv, "w").close()
-        if os.name != "nt":
-            # dossiers_dll_paquets suit la disposition du systeme courant.
-            lib = os.path.join(bac.dossier, "venv", "lib", "python3.11",
-                               "site-packages", "nvidia", "cudnn", "lib")
-            os.makedirs(lib, exist_ok=True)
         trouve = module.cudnn_deja_installe(faux_venv)
         controler("une branche cuDNN deja posee est reconnue",
                   bool(trouve) and "cudnn" in trouve.lower(), str(trouve))
@@ -827,6 +878,63 @@ def test_pile_gpu_demande_sa_branche_cuda():
         controler("et un venv sans cuDNN ne fait pas illusion",
                   module.cudnn_deja_installe(vide) == "",
                   str(module.cudnn_deja_installe(vide)))
+    finally:
+        bac.fermer()
+
+
+def test_dossiers_de_bibliotheques_nvidia():
+    """Un dossier se retient sur ce qu'il contient, pas sur son nom.
+
+    Releve le 2026-09-17 sur la roue nvidia_cublas-13.8.0.4-win_amd64 : les
+    roues CUDA 13 rangent leurs DLL sous nvidia/cu13/bin/x86_64, alors que
+    celles de CUDA 12 les posaient dans nvidia/<paquet>/bin. Le filtre par nom
+    retenait donc le dossier "bin", qui ne contient qu'un sous-dossier, et le
+    moteur declarait cublas64_13.dll introuvable alors que la roue etait
+    installee.
+    """
+    print("Materiel : les dossiers de bibliotheques se reperent au contenu")
+    bac = Bac()
+    try:
+        module = bac.module
+        venv = os.path.join(bac.dossier, "venv")
+        py = os.path.join(venv, "Scripts", "python.exe")
+        os.makedirs(os.path.dirname(py), exist_ok=True)
+        open(py, "w").close()
+        site = os.path.join(venv, "Lib", "site-packages", "nvidia")
+
+        # Disposition CUDA 13 : la DLL est deux niveaux sous "bin".
+        cu13 = os.path.join(site, "cu13", "bin", "x86_64")
+        os.makedirs(cu13, exist_ok=True)
+        open(os.path.join(cu13, "cublas64_13.dll"), "w").close()
+        # Disposition CUDA 12 : la DLL est directement dans "bin".
+        cu12 = os.path.join(site, "cudnn", "bin")
+        os.makedirs(cu12, exist_ok=True)
+        open(os.path.join(cu12, "cudnn64_9.dll"), "w").close()
+        # Un dossier qui porte le bon nom mais ne contient aucune bibliotheque.
+        vide = os.path.join(site, "cu13", "lib")
+        os.makedirs(vide, exist_ok=True)
+        open(os.path.join(vide, "cublas.lib"), "w").close()
+
+        trouves = module.dossiers_dll_paquets(py)
+        normalises = [os.path.normcase(os.path.abspath(d)) for d in trouves]
+        controler("la disposition CUDA 13 est trouvee malgre son sous-dossier",
+                  os.path.normcase(os.path.abspath(cu13)) in normalises,
+                  str(trouves))
+        controler("la disposition CUDA 12 l'est toujours",
+                  os.path.normcase(os.path.abspath(cu12)) in normalises,
+                  str(trouves))
+        controler("un dossier sans bibliotheque n'est pas expose",
+                  os.path.normcase(os.path.abspath(vide)) not in normalises,
+                  str(trouves))
+        controler("le dossier bin intermediaire, vide, ne l'est pas non plus",
+                  os.path.normcase(os.path.abspath(os.path.dirname(cu13)))
+                  not in normalises, str(trouves))
+
+        chemin = module.contient_bibliotheque
+        controler("une bibliotheque versionnee POSIX compte aussi",
+                  chemin(["libcublas.so.13"]) and chemin(["libcudnn.dylib"]))
+        controler("un fichier d'en-tete ou d'edition de liens ne compte pas",
+                  not chemin(["cublas.lib", "cublas.h", "__init__.py"]))
     finally:
         bac.fermer()
 
@@ -1287,6 +1395,7 @@ def main():
     test_cause_probable()
     test_lignes_du_moteur()
     test_pile_gpu_demande_sa_branche_cuda()
+    test_dossiers_de_bibliotheques_nvidia()
     test_verdict_perime_par_une_nouvelle_version()
     test_annulation_et_processus_orphelins()
     test_isolation_environnement()

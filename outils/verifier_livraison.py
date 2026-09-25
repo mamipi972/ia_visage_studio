@@ -357,6 +357,52 @@ def main():
              "le script de validation croise lui aussi : sans cela, un seul "
              "fournisseur inconnu de la build fait rejeter toute la liste")
 
+    # 6 ter. Les deux memes copies portent le prelude d'exposition des DLL.
+    #
+    # Meme raison, meme prix : sous Windows, depuis Python 3.8, le PATH ne sert
+    # plus a resoudre les dependances d'une DLL chargee par un module
+    # d'extension. Sans os.add_dll_directory, onnxruntime trouve son
+    # fournisseur CUDA mais pas le cublas dont il depend. Une copie qui
+    # l'oublierait rendrait l'acceleration impossible par l'un des deux
+    # chemins seulement - donc de facon intermittente, ce qui est pire.
+    def prelude(texte):
+        """Source exacte de la fonction, decoupee par l'analyseur syntaxique.
+
+        Un decoupage au prochain "\ndef " paraissait suffire : dans le script
+        de validation la fonction est suivie de main(), mais dans le worker
+        elle est suivie de constantes et de classes, si bien que la comparaison
+        portait sur deux longueurs differentes. Ce controle a donc signale une
+        derive qui n'existait pas - un faux positif vaut mieux qu'un faux
+        negatif, mais il ne vaut rien s'il reste.
+        """
+        try:
+            arbre = ast.parse(texte or "")
+        except SyntaxError:
+            return ""
+        lignes = (texte or "").splitlines()
+        for noeud in arbre.body:
+            if (isinstance(noeud, ast.FunctionDef)
+                    and noeud.name == "exposer_bibliotheques_natives"):
+                fin = getattr(noeud, "end_lineno", None) or len(lignes)
+                return "\n".join(lignes[noeud.lineno - 1:fin]).strip()
+        return ""
+
+    prelude_worker = prelude(worker)
+    prelude_validation = prelude(validation)
+    verifier(bool(prelude_worker),
+             "le worker expose les bibliotheques natives avant d'importer le "
+             "moteur")
+    verifier(bool(prelude_validation),
+             "le script de validation les expose lui aussi : sans quoi "
+             "l'inference de controle echoue la ou le traitement reussirait")
+    verifier(prelude_worker == prelude_validation,
+             "les deux copies du prelude d'exposition sont identiques")
+    verifier("add_dll_directory" in prelude_worker,
+             "le prelude enregistre les dossiers au lieu de compter sur le PATH")
+    verifier("_DOSSIERS_DLL.append" in prelude_worker,
+             "et il conserve les poignees : leur ramassage retirerait le "
+             "dossier aussitot ajoute")
+
     module, bac, sauve = charger_greffon_hors_gimp()
     try:
         # 7. Fidelite de la documentation.

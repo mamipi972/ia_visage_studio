@@ -1431,6 +1431,28 @@ def sonde_runtime_cuda():
     return _RUNTIME_CUDA
 
 
+def contient_bibliotheque(fichiers):
+    """Un dossier compte s'il contient une bibliotheque, pas s'il porte un nom.
+
+    Le filtre precedent retenait les dossiers nommes "bin" ou "lib". Les roues
+    CUDA 12 les nommaient ainsi ; celles de CUDA 13 ont adopte
+    nvidia/cu13/bin/x86_64, ou le dossier "bin" ne contient qu'un
+    sous-dossier. Le greffon exposait donc un dossier vide, et le moteur
+    signalait cublas64_13.dll introuvable alors que la roue etait installee.
+    Un critere fonde sur le contenu ne se perime pas a la reorganisation
+    suivante, et il y en aura une.
+    """
+    for nom in fichiers:
+        bas = nom.lower()
+        if bas.endswith(".dll") or bas.endswith(".dylib"):
+            return True
+        # libcublas.so, mais aussi libcublas.so.13 : le suffixe de version
+        # suit l'extension. Un ".so" ailleurs dans le nom ne compte pas.
+        if bas.endswith(".so") or ".so." in bas:
+            return True
+    return False
+
+
 def dossiers_dll_paquets(python_venv):
     """Dossiers de bibliotheques des roues nvidia installees dans le venv.
 
@@ -1439,22 +1461,22 @@ def dossiers_dll_paquets(python_venv):
     """
     dossiers = []
     racine = os.path.dirname(os.path.dirname(os.path.abspath(python_venv)))
-    candidats = []
-    if os.name == "nt":
-        candidats.append(os.path.join(racine, "Lib", "site-packages", "nvidia"))
-    else:
-        lib = os.path.join(racine, "lib")
-        try:
-            for entree in os.listdir(lib):
-                candidats.append(os.path.join(lib, entree, "site-packages", "nvidia"))
-        except Exception:
-            pass
+    # Les deux dispositions sont essayees sans regarder le systeme courant.
+    # Le venv a ete cree sur cette machine, donc l'une des deux seulement
+    # existe ; les essayer toutes les deux ne coute qu'un os.path.isdir, et
+    # rend la fonction verifiable ailleurs que sur le systeme qu'elle vise.
+    candidats = [os.path.join(racine, "Lib", "site-packages", "nvidia")]
+    lib = os.path.join(racine, "lib")
+    try:
+        for entree in sorted(os.listdir(lib)):
+            candidats.append(os.path.join(lib, entree, "site-packages", "nvidia"))
+    except Exception:
+        pass
     for base in candidats:
         if not os.path.isdir(base):
             continue
-        for dossier, _, _ in os.walk(base):
-            nom = os.path.basename(dossier).lower()
-            if nom in ("bin", "lib"):
+        for dossier, _, fichiers in os.walk(base):
+            if contient_bibliotheque(fichiers):
                 dossiers.append(dossier)
     return dossiers
 
@@ -1489,6 +1511,68 @@ import json
 import sys
 
 
+# --- Exposition des bibliotheques natives -------------------------------------
+# Copie exacte dans le worker et dans le script de validation ; le controle de
+# livraison compare les deux, comme il compare deja le croisement des
+# fournisseurs. Deux copies qui derivent, c'est ce qui a rendu l'acceleration
+# impossible une premiere fois.
+_DOSSIERS_DLL = []
+
+
+def exposer_bibliotheques_natives():
+    """Rend visibles les bibliotheques des roues nvidia de cet environnement.
+
+    Sous Windows, depuis Python 3.8, le PATH n'est plus consulte pour resoudre
+    les dependances d'une DLL chargee par un module d'extension : seuls
+    comptent les dossiers enregistres par os.add_dll_directory. Les roues
+    nvidia posent leurs bibliotheques dans site-packages/nvidia/<paquet>/bin.
+    Sans cet enregistrement, onnxruntime trouve bien son
+    onnxruntime_providers_cuda.dll, mais pas le cublas dont celui-ci depend -
+    et il retombe sur le processeur en nommant cuDNN, qui n'y est pour rien.
+
+    Les poignees rendues par add_dll_directory sont conservees : leur
+    ramassage par le collecteur retirerait le dossier aussitot ajoute.
+    """
+    import os
+    import sys
+
+    if not hasattr(os, "add_dll_directory"):
+        return []                      # tout systeme autre que Windows
+
+    racines = []
+    try:
+        import sysconfig
+        chemins = sysconfig.get_paths()
+        for cle in ("purelib", "platlib"):
+            if chemins.get(cle):
+                racines.append(os.path.join(chemins[cle], "nvidia"))
+    except Exception:
+        pass
+    racines.append(os.path.join(sys.prefix, "Lib", "site-packages", "nvidia"))
+
+    exposes = []
+    vus = set()
+    for base in racines:
+        if not os.path.isdir(base):
+            continue
+        for dossier, _, fichiers in os.walk(base):
+            # Un dossier compte s'il contient une bibliotheque, pas s'il porte
+            # un nom : les roues CUDA 13 rangent leurs DLL sous
+            # nvidia/cu13/bin/x86_64, ou "bin" lui-meme est vide.
+            if not any(n.lower().endswith(".dll") for n in fichiers):
+                continue
+            cle = os.path.normcase(os.path.abspath(dossier))
+            if cle in vus:
+                continue
+            vus.add(cle)
+            try:
+                _DOSSIERS_DLL.append(os.add_dll_directory(dossier))
+                exposes.append(dossier)
+            except OSError:
+                pass
+    return exposes
+
+
 def main():
     if len(sys.argv) < 2:
         return 2
@@ -1496,8 +1580,13 @@ def main():
         cfg = json.load(f)
     sortie = cfg.get("sortie")
     resultat = {"ok": False, "fournisseur": "", "detail": "",
-                "disponibles": [], "demandes": [], "version": ""}
+                "disponibles": [], "demandes": [], "version": "",
+                "dll_exposees": []}
     try:
+        # Avant tout import du moteur : une fois onnxruntime charge, il est
+        # trop tard pour lui indiquer ou sont ses bibliotheques.
+        resultat["dll_exposees"] = exposer_bibliotheques_natives()
+
         import numpy as np
         import onnxruntime as ort
 
@@ -1588,6 +1677,10 @@ def valider_acceleration(python_venv, env, modele, taille_entree, dossier_travai
     constat = {"ok": False, "fournisseur": donnees.get("fournisseur", ""),
                "detail": "", "disponibles": donnees.get("disponibles") or [],
                "version": donnees.get("version", ""),
+               # Ce que la validation a reellement expose au chargeur. Sans ce
+               # report, une dependance manquante et un dossier non expose se
+               # presentent de la meme facon, et seul le second se repare.
+               "dll_exposees": donnees.get("dll_exposees") or [],
                "journal": lignes_diagnostic_moteur(lire_journal(log))}
     if depasse:
         constat["detail"] = ("l'inference de validation a depasse %d s"
@@ -1631,6 +1724,25 @@ def message_du_moteur(ligne):
     return ligne.strip()
 
 
+def raccourcir_au_milieu(ligne, budget=None):
+    """Coupe au milieu plutot qu'a la fin.
+
+    Une coupe en fin de ligne parait naturelle et perd systematiquement le
+    plus utile : "Error loading <un tres long chemin de venv> which depends on
+    cublas64_13.dll" ne dit ce qui manque qu'a son dernier mot. La ligne
+    suivante, elle, portait son diagnostic au milieu. Garder les deux bouts
+    est la seule coupe qui n'arbitre pas a l'aveugle entre les deux.
+    """
+    budget = budget or LONGUEUR_LIGNE_MOTEUR
+    ligne = ligne or ""
+    if len(ligne) <= budget:
+        return ligne
+    coupure = " [...] "
+    reste = budget - len(coupure)
+    tete = reste // 2
+    return ligne[:tete] + coupure + ligne[len(ligne) - (reste - tete):]
+
+
 def lignes_diagnostic_moteur(journal_texte):
     """Ce que le moteur a dit lui-meme de son chargement de fournisseur.
 
@@ -1646,7 +1758,7 @@ def lignes_diagnostic_moteur(journal_texte):
                                       "tensorrt", "rocm", "directml")):
             ligne = message_du_moteur(ligne)
             if ligne and ligne not in interessantes:
-                interessantes.append(ligne[:LONGUEUR_LIGNE_MOTEUR])
+                interessantes.append(raccourcir_au_milieu(ligne))
     return interessantes[-4:]
 
 
@@ -1871,6 +1983,7 @@ def memoriser_verdict_acceleration(ok, constat):
         "fournisseur": constat.get("fournisseur", ""),
         "detail": str(constat.get("detail", ""))[:300],
         "disponibles": constat.get("disponibles") or [],
+        "dll_exposees": constat.get("dll_exposees") or [],
         "version_moteur": constat.get("version", ""),
         "journal": constat.get("journal") or [],
         "constate_le": time.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -1926,6 +2039,20 @@ _MOTIF_CUDA_EXIGE = re.compile(r"cuda\s+(\d+)\s*\.\s*\*", re.IGNORECASE)
 _MOTIF_CUDA_POSTE = re.compile(r"cuda[\\/]v(\d+)\.", re.IGNORECASE)
 
 
+# "Error loading <...>_providers_cuda.dll which depends on cublas64_13.dll".
+# Le fournisseur est la ; c'est sa dependance qui manque. Le nom est le seul
+# fait exploitable de toute la trace, et il se trouve en fin de ligne.
+_MOTIF_DEPENDANCE = re.compile(
+    r"depends on [\"']?([A-Za-z0-9_.+-]+)", re.IGNORECASE)
+
+
+def dependance_manquante(constat):
+    """Nom de la bibliotheque dont le fournisseur depend sans la trouver."""
+    texte = " ".join(constat.get("journal") or []) + " " + str(constat.get("detail", ""))
+    trouve = _MOTIF_DEPENDANCE.search(texte)
+    return trouve.group(1).strip("\"' ,.") if trouve else None
+
+
 def desaccord_cuda(constat, detail_runtime):
     """Les deux majeures de CUDA, quand le moteur et le poste les nomment.
 
@@ -1947,6 +2074,24 @@ def desaccord_cuda(constat, detail_runtime):
 
 def cause_probable(constat, detail_runtime=""):
     """Une phrase de cause, appuyee sur ce que le moteur a reellement dit."""
+    manquante = dependance_manquante(constat)
+    if manquante:
+        exposees = constat.get("dll_exposees") or []
+        if exposees:
+            return ("Le fournisseur GPU a bien ete charge, mais la "
+                    "bibliotheque %s dont il depend reste introuvable. Les %d "
+                    "dossier(s) de bibliotheques de l'environnement ont "
+                    "pourtant ete exposes au chargeur : ce fichier n'est donc "
+                    "pas dans l'environnement. Cochez \"Reinstaller "
+                    "l'environnement IA\" pour le refaire complet."
+                    % (manquante, len(exposees)))
+        return ("Le fournisseur GPU a bien ete charge, mais la bibliotheque "
+                "%s dont il depend n'a pas ete trouvee. Elle est installee "
+                "dans l'environnement ; c'est son dossier qui n'etait pas "
+                "expose au chargeur - sous Windows, depuis Python 3.8, le "
+                "PATH n'y suffit plus. Cette version du greffon l'expose : "
+                "relancez simplement le filtre." % manquante)
+
     ecart = desaccord_cuda(constat, detail_runtime)
     if ecart:
         return ("Les deux couches ne parlent pas de la meme version de CUDA : "
@@ -2973,6 +3118,68 @@ import sys
 import time
 import traceback
 
+# --- Exposition des bibliotheques natives -------------------------------------
+# Copie exacte dans le worker et dans le script de validation ; le controle de
+# livraison compare les deux, comme il compare deja le croisement des
+# fournisseurs. Deux copies qui derivent, c'est ce qui a rendu l'acceleration
+# impossible une premiere fois.
+_DOSSIERS_DLL = []
+
+
+def exposer_bibliotheques_natives():
+    """Rend visibles les bibliotheques des roues nvidia de cet environnement.
+
+    Sous Windows, depuis Python 3.8, le PATH n'est plus consulte pour resoudre
+    les dependances d'une DLL chargee par un module d'extension : seuls
+    comptent les dossiers enregistres par os.add_dll_directory. Les roues
+    nvidia posent leurs bibliotheques dans site-packages/nvidia/<paquet>/bin.
+    Sans cet enregistrement, onnxruntime trouve bien son
+    onnxruntime_providers_cuda.dll, mais pas le cublas dont celui-ci depend -
+    et il retombe sur le processeur en nommant cuDNN, qui n'y est pour rien.
+
+    Les poignees rendues par add_dll_directory sont conservees : leur
+    ramassage par le collecteur retirerait le dossier aussitot ajoute.
+    """
+    import os
+    import sys
+
+    if not hasattr(os, "add_dll_directory"):
+        return []                      # tout systeme autre que Windows
+
+    racines = []
+    try:
+        import sysconfig
+        chemins = sysconfig.get_paths()
+        for cle in ("purelib", "platlib"):
+            if chemins.get(cle):
+                racines.append(os.path.join(chemins[cle], "nvidia"))
+    except Exception:
+        pass
+    racines.append(os.path.join(sys.prefix, "Lib", "site-packages", "nvidia"))
+
+    exposes = []
+    vus = set()
+    for base in racines:
+        if not os.path.isdir(base):
+            continue
+        for dossier, _, fichiers in os.walk(base):
+            # Un dossier compte s'il contient une bibliotheque, pas s'il porte
+            # un nom : les roues CUDA 13 rangent leurs DLL sous
+            # nvidia/cu13/bin/x86_64, ou "bin" lui-meme est vide.
+            if not any(n.lower().endswith(".dll") for n in fichiers):
+                continue
+            cle = os.path.normcase(os.path.abspath(dossier))
+            if cle in vus:
+                continue
+            vus.add(cle)
+            try:
+                _DOSSIERS_DLL.append(os.add_dll_directory(dossier))
+                exposes.append(dossier)
+            except OSError:
+                pass
+    return exposes
+
+
 CODE_OK = 0
 CODE_PARAMS = 2
 CODE_IMPORT = 3
@@ -3846,6 +4053,12 @@ def run():
     notes = []
     degradations = []
     moteurs = []
+
+    # Avant tout import du moteur : une fois onnxruntime charge, il est trop
+    # tard pour lui indiquer ou sont les bibliotheques dont il depend.
+    exposees = exposer_bibliotheques_natives()
+    if exposees:
+        notes.append("bibliotheques natives exposees: %d dossier(s)" % len(exposees))
 
     try:
         import numpy as np
